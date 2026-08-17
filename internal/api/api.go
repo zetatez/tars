@@ -16,6 +16,7 @@ import (
 	"tars/internal/auth"
 	"tars/internal/config"
 	"tars/internal/perm"
+	"tars/internal/quota"
 	"tars/internal/session"
 )
 
@@ -24,14 +25,15 @@ type ctxKey int
 const keyInfoKey ctxKey = 0
 
 type Server struct {
-	cfg *config.Config
-	db  *sql.DB
-	log *slog.Logger
-	mgr *session.Manager
+	cfg   *config.Config
+	db    *sql.DB
+	log   *slog.Logger
+	mgr   *session.Manager
+	quota *quota.Checker
 }
 
-func New(cfg *config.Config, db *sql.DB, log *slog.Logger, mgr *session.Manager) *Server {
-	return &Server{cfg: cfg, db: db, log: log, mgr: mgr}
+func New(cfg *config.Config, db *sql.DB, log *slog.Logger, mgr *session.Manager, q *quota.Checker) *Server {
+	return &Server{cfg: cfg, db: db, log: log, mgr: mgr, quota: q}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -54,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/keys/{id}", s.authAdmin(s.handleDeleteKey))
 	mux.HandleFunc("GET /api/v1/keys/{id}/config", s.auth(s.handleGetKeyConfig))
 	mux.HandleFunc("PUT /api/v1/keys/{id}/config", s.auth(s.handlePutKeyConfig))
+	mux.HandleFunc("GET /api/v1/keys/{id}/stats", s.auth(s.handleKeyStats))
 	return mux
 }
 
@@ -82,6 +85,18 @@ func (s *Server) authAdmin(next http.HandlerFunc) http.HandlerFunc {
 func keyInfo(r *http.Request) auth.KeyInfo {
 	ki, _ := r.Context().Value(keyInfoKey).(auth.KeyInfo)
 	return ki
+}
+
+func (s *Server) checkRead(w http.ResponseWriter, r *http.Request, sessionKeyID string) bool {
+	if !s.cfg.Tenant.ReadIsolation {
+		return true
+	}
+	ki := keyInfo(r)
+	if ki.Role == auth.RoleAdmin || ki.KeyID == sessionKeyID {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+	return false
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +212,24 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rolled_back": true})
 }
 
+func (s *Server) handleKeyStats(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkKeyAccess(w, r, id) {
+		return
+	}
+	var sessions, messages, memories, auditCount int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM session WHERE key_id = ?`, id).Scan(&sessions)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM message WHERE session_id IN (SELECT id FROM session WHERE key_id = ?)`, id).Scan(&messages)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM memory WHERE key_id = ?`, id).Scan(&memories)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM audit WHERE client_key = ?`, id).Scan(&auditCount)
+	writeJSON(w, http.StatusOK, map[string]int{
+		"sessions": sessions,
+		"messages": messages,
+		"memories": memories,
+		"audit":    auditCount,
+	})
+}
+
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	ki := keyInfo(r)
 	var body struct {
@@ -204,6 +237,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if s.quota != nil {
+		if err := s.quota.CheckCreateSession(ki.KeyID); err != nil {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	a, err := s.mgr.Create(ki.KeyID, body.Cwd, body.Model, ki.Role)
 	if err != nil {
 		s.log.Error("create session", "err", err)
@@ -215,9 +254,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	ki := keyInfo(r)
 	list := s.mgr.List()
 	out := make([]map[string]any, 0, len(list))
 	for _, a := range list {
+		if s.cfg.Tenant.ReadIsolation && ki.Role != auth.RoleAdmin && a.KeyID != ki.KeyID {
+			continue
+		}
 		out = append(out, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": a.Model})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
@@ -227,6 +270,9 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.mgr.Get(r.PathValue("id"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if !s.checkRead(w, r, a.KeyID) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": a.Model})
@@ -260,6 +306,12 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	if a.KeyID != ki.KeyID {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
+	}
+	if s.quota != nil {
+		if err := s.quota.CheckTurn(ki.KeyID); err != nil {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	var body struct {
 		Text  string   `json:"text"`
@@ -306,7 +358,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	_ = a
+	if !s.checkRead(w, r, a.KeyID) {
+		return
+	}
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 200 {
@@ -344,6 +398,9 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.mgr.Get(r.PathValue("id"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if !s.checkRead(w, r, a.KeyID) {
 		return
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,6 +19,7 @@ import (
 type Store struct {
 	db       *sql.DB
 	lockFile *os.File
+	dataDir  string
 }
 
 func Open(dataDir string, cfg config.Storage) (*Store, error) {
@@ -47,7 +49,7 @@ func Open(dataDir string, cfg config.Storage) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	s := &Store{db: db, lockFile: lockFile}
+	s := &Store{db: db, lockFile: lockFile, dataDir: dataDir}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
@@ -154,6 +156,70 @@ func (s *Store) CheckpointLoop(ctx context.Context, interval time.Duration) {
 			s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 		}
 	}
+}
+
+func (s *Store) CleanupLoop(ctx context.Context, cfg config.StorageQuota, sessionRetentionDays int, log *slog.Logger) {
+	interval := cfg.ScanInterval.Duration
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.cleanup(cfg, sessionRetentionDays, log)
+		}
+	}
+}
+
+func (s *Store) cleanup(cfg config.StorageQuota, sessionRetentionDays int, log *slog.Logger) {
+	now := time.Now().Unix()
+
+	if sessionRetentionDays > 0 {
+		cutoff := now - int64(sessionRetentionDays)*86400
+		if res, err := s.db.Exec(`DELETE FROM session WHERE status != 'archived' AND time_updated < ?`, cutoff); err == nil {
+			if n, _ := res.RowsAffected(); n > 0 {
+				log.Info("cleanup: archived sessions", "count", n)
+			}
+		}
+	}
+	if auditRet, ok := cfg.Categories["audit"]; ok && auditRet.RetentionDays > 0 {
+		cutoff := now - int64(auditRet.RetentionDays)*86400
+		if res, err := s.db.Exec(`DELETE FROM audit WHERE created < ?`, cutoff); err == nil {
+			if n, _ := res.RowsAffected(); n > 0 {
+				log.Info("cleanup: expired audit", "count", n)
+			}
+		}
+	}
+	if res, err := s.db.Exec(`DELETE FROM memory WHERE ttl IS NOT NULL AND ttl < ?`, now); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Info("cleanup: expired memory", "count", n)
+		}
+	}
+	if res, err := s.db.Exec(`DELETE FROM approval WHERE resolved IS NOT NULL AND resolved < ?`, now-int64(30)*86400); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Info("cleanup: expired approval", "count", n)
+		}
+	}
+
+	if !s.checkDiskSpace(cfg.MinFreeMB) {
+		log.Error("disk space below threshold", "min_free_mb", cfg.MinFreeMB)
+	}
+}
+
+func (s *Store) checkDiskSpace(minFreeMB int) bool {
+	if minFreeMB <= 0 {
+		return true
+	}
+	var stat unix.Statfs_t
+	if err := unix.Statfs(s.dataDir, &stat); err != nil {
+		return true
+	}
+	freeMB := stat.Bavail * uint64(stat.Bsize) / 1024 / 1024
+	return freeMB >= uint64(minFreeMB)
 }
 
 func (s *Store) Close() error {

@@ -22,6 +22,8 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
+var ErrContextOverflow = errors.New("context overflow")
+
 type ToolDef struct {
 	Type     string  `json:"type"`
 	Function FuncDef `json:"function"`
@@ -147,8 +149,12 @@ func (c *Client) doStream(ctx context.Context, req ChatRequest) (*Result, error)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("llm status %d", resp.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		lower := strings.ToLower(string(b))
+		if strings.Contains(lower, "context") || strings.Contains(lower, "length") || strings.Contains(lower, "token") {
+			return nil, ErrContextOverflow
+		}
+		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	return c.parseStream(ctx, resp.Body)

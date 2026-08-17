@@ -17,6 +17,7 @@ import (
 	"tars/internal/llm"
 	"tars/internal/log"
 	"tars/internal/perm"
+	"tars/internal/quota"
 	"tars/internal/session"
 	"tars/internal/store"
 	"tars/internal/tools"
@@ -70,8 +71,9 @@ func main() {
 	permEval := perm.New(cfg)
 	ag := agent.New(cfg, st.DB(), llmClient, reg, permEval, logger)
 
+	qc := quota.New(cfg, st.DB())
 	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd, ag, cfg.DataDir, cfg.Session)
-	srv := api.New(cfg, st.DB(), logger, mgr)
+	srv := api.New(cfg, st.DB(), logger, mgr, qc)
 
 	httpServer := &http.Server{
 		Addr:    cfg.Listen,
@@ -82,6 +84,7 @@ func main() {
 	defer stop()
 
 	go st.CheckpointLoop(ctx, cfg.Storage.WALCheckpointInterval.Duration)
+	go st.CleanupLoop(ctx, cfg.StorageQ, cfg.Session.RetentionDays, logger)
 
 	errCh := make(chan error, 1)
 	go func() {
