@@ -73,7 +73,6 @@ type LLMProvider struct {
 	Model         string `yaml:"model"`
 	ContextWindow int    `yaml:"context_window"`
 	Priority      int    `yaml:"priority"`
-	Weight        int    `yaml:"weight"`
 }
 
 type Retry struct {
@@ -265,7 +264,6 @@ func Default() *Config {
 					Model:         "deepseek-chat",
 					ContextWindow: 128000,
 					Priority:      1,
-					Weight:        1,
 				},
 			},
 		},

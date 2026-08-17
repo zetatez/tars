@@ -21,7 +21,6 @@ type Provider interface {
 type entry struct {
 	provider      Provider
 	priority      int
-	weight        int
 	contextWindow int
 	healthy       bool
 	failCount     int
@@ -64,14 +63,9 @@ func NewPool(cfg config.LLM) *Pool {
 		default:
 			provider = newOpenAIProvider(pc, cfg.IdleTimeout.Duration)
 		}
-		w := pc.Weight
-		if w <= 0 {
-			w = 1
-		}
 		p.entries = append(p.entries, &entry{
 			provider:      provider,
 			priority:      pc.Priority,
-			weight:        w,
 			contextWindow: pc.ContextWindow,
 			healthy:       true,
 		})
@@ -146,7 +140,7 @@ func (p *Pool) pick(seen map[string]bool) *entry {
 	var chosen *entry
 	switch p.strategy {
 	case "random":
-		chosen = pickWeighted(healthy)
+		chosen = healthy[rand.Intn(len(healthy))]
 	case "round_robin":
 		p.rrIdx = (p.rrIdx) % len(healthy)
 		chosen = healthy[p.rrIdx]
@@ -161,24 +155,6 @@ func (p *Pool) pick(seen map[string]bool) *entry {
 		seen[chosen.provider.Name()] = true
 	}
 	return chosen
-}
-
-func pickWeighted(entries []*entry) *entry {
-	total := 0
-	for _, e := range entries {
-		total += e.weight
-	}
-	if total <= 0 {
-		return entries[rand.Intn(len(entries))]
-	}
-	r := rand.Intn(total)
-	for _, e := range entries {
-		r -= e.weight
-		if r < 0 {
-			return e
-		}
-	}
-	return entries[len(entries)-1]
 }
 
 func (p *Pool) markFailure(e *entry) {
