@@ -15,7 +15,7 @@ import (
 
 	"tars/internal/auth"
 	"tars/internal/config"
-	"tars/internal/perm"
+	"tars/internal/permission"
 	"tars/internal/quota"
 	"tars/internal/session"
 )
@@ -216,7 +216,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
-	if err := perm.Rollback(s.db, a.ID); err != nil {
+	if err := permission.Rollback(s.db, a.ID); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}

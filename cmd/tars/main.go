@@ -17,7 +17,7 @@ import (
 	"tars/internal/llm"
 	"tars/internal/log"
 	"tars/internal/mcp"
-	"tars/internal/perm"
+	"tars/internal/permission"
 	"tars/internal/quota"
 	"tars/internal/session"
 	"tars/internal/store"
@@ -69,7 +69,7 @@ func main() {
 
 	llmPool := llm.NewPool(cfg.LLM)
 	reg := tools.Default(cfg)
-	permEval := perm.New(cfg)
+	permEval := permission.New(cfg)
 	ag := agent.New(cfg, st.DB(), llmPool, reg, permEval, logger)
 
 	qc := quota.New(cfg, st.DB())

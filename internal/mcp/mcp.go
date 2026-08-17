@@ -10,7 +10,7 @@ import (
 
 	"tars/internal/auth"
 	"tars/internal/config"
-	"tars/internal/perm"
+	"tars/internal/permission"
 	"tars/internal/session"
 	"tars/internal/tools"
 )
@@ -20,11 +20,11 @@ type Server struct {
 	db    *sql.DB
 	log   *slog.Logger
 	tools *tools.Registry
-	perm  *perm.Evaluator
+	perm  *permission.Evaluator
 	mgr   *session.Manager
 }
 
-func New(cfg *config.Config, db *sql.DB, log *slog.Logger, tools *tools.Registry, perm *perm.Evaluator, mgr *session.Manager) *Server {
+func New(cfg *config.Config, db *sql.DB, log *slog.Logger, tools *tools.Registry, perm *permission.Evaluator, mgr *session.Manager) *Server {
 	return &Server{cfg: cfg, db: db, log: log, tools: tools, perm: perm, mgr: mgr}
 }
 
@@ -160,8 +160,8 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any,
 		return nil, errors.New("unknown tool: " + name)
 	}
 
-	dec := s.evaluate(name, args, role)
-	if dec.Effect != perm.EffectAllow {
+	dec := s.evaluateTool(name, args, role, s.cfg.DefaultCwd)
+	if dec.Effect != permission.EffectAllow {
 		return nil, errors.New("denied: " + dec.Reason)
 	}
 
@@ -180,28 +180,12 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any,
 	}, nil
 }
 
-func (s *Server) evaluate(name string, args map[string]any, role string) perm.Decision {
-	switch name {
-	case "exec_command":
-		return s.perm.EvaluateExec(toStringSlice(args["argv"]), role)
-	case "write_file", "edit_file":
-		path, _ := args["path"].(string)
-		return s.perm.EvaluateWrite(path, role)
-	default:
-		return s.perm.EvaluateRead(name, "")
-	}
-}
-
-func toStringSlice(v any) []string {
-	arr, ok := v.([]any)
+func (s *Server) evaluateTool(name string, args map[string]any, role, cwd string) permission.Decision {
+	t, ok := s.tools.Get(name)
 	if !ok {
-		return nil
+		return permission.Decision{Effect: permission.EffectDeny, Level: permission.LevelWorkspace, Reason: "unknown tool: " + name}
 	}
-	out := make([]string, len(arr))
-	for i, a := range arr {
-		out[i], _ = a.(string)
-	}
-	return out
+	return s.perm.EvaluateToolCall(name, t.PolicyAction, t.ResourceKey, args, role, cwd)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

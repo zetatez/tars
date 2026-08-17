@@ -17,7 +17,7 @@ import (
 	"tars/internal/audit"
 	"tars/internal/config"
 	"tars/internal/llm"
-	"tars/internal/perm"
+	"tars/internal/permission"
 	"tars/internal/tools"
 )
 
@@ -41,11 +41,11 @@ type Agent struct {
 	db    *sql.DB
 	llm   *llm.Pool
 	tools *tools.Registry
-	perm  *perm.Evaluator
+	perm  *permission.Evaluator
 	log   *slog.Logger
 }
 
-func New(cfg *config.Config, db *sql.DB, llm *llm.Pool, tools *tools.Registry, perm *perm.Evaluator, log *slog.Logger) *Agent {
+func New(cfg *config.Config, db *sql.DB, llm *llm.Pool, tools *tools.Registry, perm *permission.Evaluator, log *slog.Logger) *Agent {
 	return &Agent{cfg: cfg, db: db, llm: llm, tools: tools, perm: perm, log: log}
 }
 
@@ -278,13 +278,12 @@ func (a *Agent) memoryInjection(sess Session) string {
 }
 
 func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call, scope *tools.Scope) []tools.CallResult {
-	role := sess.SessionRole()
 	results := make([]tools.CallResult, len(calls))
 	var allowed []tools.Call
 	var allowedIdx []int
 
 	for i, call := range calls {
-		dec := a.evaluate(call, role)
+		dec := a.evaluateTool(call, sess)
 		audit.Record(a.db, audit.Entry{
 			ClientKey: sess.SessionKeyID(),
 			SessionID: sess.SessionID(),
@@ -292,7 +291,7 @@ func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call,
 			Decision:  dec.Effect,
 			Args:      call.Args,
 		})
-		if dec.Effect == perm.EffectAsk {
+		if dec.Effect == permission.EffectAsk {
 			resource := toolResource(call)
 			requestID := uuid.NewString()
 			now := time.Now().Unix()
@@ -308,20 +307,20 @@ func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call,
 			}
 			if dec.NeedBackup {
 				if path, ok := call.Args["path"].(string); ok && path != "" {
-					perm.BackupBeforeWrite(a.db, a.cfg.DataDir, sess.SessionID(), resolveFull(scope, path))
+					permission.BackupBeforeWrite(a.db, a.cfg.DataDir, sess.SessionID(), permission.ResolvePath(scope.Cwd, path))
 				}
 			}
 			allowed = append(allowed, call)
 			allowedIdx = append(allowedIdx, i)
 			continue
 		}
-		if dec.Effect != perm.EffectAllow {
+		if dec.Effect != permission.EffectAllow {
 			results[i] = tools.CallResult{ID: call.ID, Name: call.Name, Args: call.Args, Status: "denied", Result: tools.Result{"denied": true, "reason": dec.Reason}}
 			continue
 		}
 		if dec.NeedBackup {
 			if path, ok := call.Args["path"].(string); ok && path != "" {
-				perm.BackupBeforeWrite(a.db, a.cfg.DataDir, sess.SessionID(), resolveFull(scope, path))
+				permission.BackupBeforeWrite(a.db, a.cfg.DataDir, sess.SessionID(), permission.ResolvePath(scope.Cwd, path))
 			}
 		}
 		allowed = append(allowed, call)
@@ -365,21 +364,12 @@ func toolResource(call tools.Call) string {
 	return call.Name
 }
 
-func (a *Agent) evaluate(call tools.Call, role string) perm.Decision {
-	switch call.Name {
-	case "exec_command":
-		return a.perm.EvaluateExec(toStringSlice(call.Args["argv"]), role)
-	case "write_file", "edit_file":
-		path, _ := call.Args["path"].(string)
-		return a.perm.EvaluateWrite(path, role)
-	default:
-		t, _ := a.tools.Get(call.Name)
-		action := call.Name
-		if t != nil {
-			action = t.PolicyAction
-		}
-		return a.perm.EvaluateRead(action, "")
+func (a *Agent) evaluateTool(call tools.Call, sess Session) permission.Decision {
+	t, ok := a.tools.Get(call.Name)
+	if !ok {
+		return permission.Decision{Effect: permission.EffectDeny, Level: permission.LevelWorkspace, Reason: "unknown tool: " + call.Name}
 	}
+	return a.perm.EvaluateToolCall(call.Name, t.PolicyAction, t.ResourceKey, call.Args, sess.SessionRole(), sess.SessionCwd())
 }
 
 func toStringSlice(v any) []string {
@@ -392,13 +382,6 @@ func toStringSlice(v any) []string {
 		out[i], _ = a.(string)
 	}
 	return out
-}
-
-func resolveFull(scope *tools.Scope, p string) string {
-	if filepath.IsAbs(p) {
-		return p
-	}
-	return filepath.Join(scope.Cwd, p)
 }
 
 const spillThreshold = 64 * 1024

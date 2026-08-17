@@ -28,6 +28,7 @@ func readFileTool() *Tool {
 			"required": []string{"path"},
 		},
 		PolicyAction: "read_file",
+		ResourceKey:  "path",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			p, _ := args["path"].(string)
@@ -62,6 +63,7 @@ func writeFileTool() *Tool {
 			"required": []string{"path", "content"},
 		},
 		PolicyAction: "write_file",
+		ResourceKey:  "path",
 		ParallelSafe: false,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			p, _ := args["path"].(string)
@@ -92,6 +94,7 @@ func editFileTool() *Tool {
 			"required": []string{"path", "old_string", "new_string"},
 		},
 		PolicyAction: "edit_file",
+		ResourceKey:  "path",
 		ParallelSafe: false,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			p, _ := args["path"].(string)
@@ -132,6 +135,7 @@ func grepTool() *Tool {
 			"required": []string{"pattern"},
 		},
 		PolicyAction: "grep",
+		ResourceKey:  "path",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			pattern, _ := args["pattern"].(string)
@@ -192,6 +196,7 @@ func globTool() *Tool {
 			"required": []string{"pattern"},
 		},
 		PolicyAction: "glob",
+		ResourceKey:  "pattern",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			pattern, _ := args["pattern"].(string)
@@ -218,6 +223,7 @@ func lsTool() *Tool {
 			},
 		},
 		PolicyAction: "ls",
+		ResourceKey:  "path",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			dir := sc.Cwd

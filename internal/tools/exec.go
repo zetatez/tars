@@ -29,6 +29,7 @@ func execTool() *Tool {
 			"required": []string{"argv"},
 		},
 		PolicyAction: "exec",
+		ResourceKey:  "argv",
 		ParallelSafe: false,
 		Execute:      runExec,
 	}

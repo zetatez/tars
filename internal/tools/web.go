@@ -28,6 +28,7 @@ func webfetchTool() *Tool {
 			"required": []string{"url"},
 		},
 		PolicyAction: "webfetch",
+		ResourceKey:  "url",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			if !sc.Cfg.Network.WebFetch.Enabled {
@@ -76,6 +77,7 @@ func websearchTool() *Tool {
 			"required": []string{"query"},
 		},
 		PolicyAction: "websearch",
+		ResourceKey:  "query",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			if !sc.Cfg.Network.WebSearch.Enabled {

@@ -24,6 +24,7 @@ type Tool struct {
 	Description  string
 	Params       map[string]any
 	PolicyAction string
+	ResourceKey  string // args 中资源字段名（"path"/"argv"/...），空表示无资源
 	ParallelSafe bool
 	Execute      func(ctx context.Context, args map[string]any, sc *Scope) (Result, error)
 }

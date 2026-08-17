@@ -1,4 +1,4 @@
-package perm
+package permission
 
 import (
 	"crypto/sha256"

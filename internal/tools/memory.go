@@ -74,6 +74,7 @@ func memoryQueryTool() *Tool {
 			"required": []string{"query"},
 		},
 		PolicyAction: "memory_query",
+		ResourceKey:  "query",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
 			if sc.KeyID == "" {
