@@ -205,6 +205,17 @@ func (s *Store) cleanup(cfg config.StorageQuota, sessionRetentionDays int, log *
 		}
 	}
 
+	if res, err := s.db.Exec(`DELETE FROM memory WHERE kind = 'episodic' AND importance <= 0`); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Info("cleanup: decayed episodic memory", "count", n)
+		}
+	}
+	if res, err := s.db.Exec(`UPDATE memory SET importance = importance - 1 WHERE kind = 'episodic' AND importance > 0 AND time_accessed < ?`, now-int64(7)*86400); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Info("cleanup: decayed memory importance", "count", n)
+		}
+	}
+
 	if !s.checkDiskSpace(cfg.MinFreeMB) {
 		log.Error("disk space below threshold", "min_free_mb", cfg.MinFreeMB)
 	}

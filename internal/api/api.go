@@ -40,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /version", s.handleVersion)
+	mux.HandleFunc("GET /metrics", s.handleMetricsProm)
 	mux.HandleFunc("GET /api/v1/metrics", s.handleMetrics)
 
 	mux.HandleFunc("POST /api/v1/keys", s.authAdmin(s.handleCreateKey))
@@ -50,6 +51,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session/{id}/prompt", s.auth(s.handlePrompt))
 	mux.HandleFunc("POST /api/v1/session/{id}/interrupt", s.auth(s.handleInterrupt))
 	mux.HandleFunc("POST /api/v1/session/{id}/rollback", s.auth(s.handleRollback))
+	mux.HandleFunc("GET /api/v1/session/{id}/approvals", s.auth(s.handleListApprovals))
+	mux.HandleFunc("POST /api/v1/session/{id}/approval", s.auth(s.handleApproval))
 	mux.HandleFunc("GET /api/v1/session/{id}/messages", s.auth(s.handleMessages))
 	mux.HandleFunc("GET /api/v1/session/{id}/event", s.auth(s.handleEvent))
 
@@ -57,6 +60,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/keys/{id}/config", s.auth(s.handleGetKeyConfig))
 	mux.HandleFunc("PUT /api/v1/keys/{id}/config", s.auth(s.handlePutKeyConfig))
 	mux.HandleFunc("GET /api/v1/keys/{id}/stats", s.auth(s.handleKeyStats))
+	mux.HandleFunc("GET /api/v1/keys/{id}/export", s.auth(s.handleKeyExport))
+	mux.HandleFunc("DELETE /api/v1/keys/{id}/data", s.auth(s.handleKeyDataDelete))
 	return mux
 }
 
@@ -112,6 +117,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"goroutines":      runtime.NumGoroutine(),
 		"active_sessions": len(s.mgr.List()),
 	})
+}
+
+func (s *Server) handleMetricsProm(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	fmt.Fprintf(w, "# HELP tars_goroutines Number of goroutines.\n# TYPE tars_goroutines gauge\ntars_goroutines %d\n", runtime.NumGoroutine())
+	fmt.Fprintf(w, "# HELP tars_active_sessions Number of active sessions.\n# TYPE tars_active_sessions gauge\ntars_active_sessions %d\n", len(s.mgr.List()))
 }
 
 func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +239,136 @@ func (s *Server) handleKeyStats(w http.ResponseWriter, r *http.Request) {
 		"memories": memories,
 		"audit":    auditCount,
 	})
+}
+
+func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rows, err := s.db.Query(
+		`SELECT id, action, resource, status, created FROM approval WHERE session_id = ? AND status = 'pending' ORDER BY created`,
+		id,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, action, resource, status string
+		var created int64
+		if rows.Scan(&id, &action, &resource, &status, &created) == nil {
+			out = append(out, map[string]any{"id": id, "action": action, "resource": resource, "status": status, "created": created})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approvals": out})
+}
+
+func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.mgr.Get(r.PathValue("id"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	ki := keyInfo(r)
+	if a.KeyID != ki.KeyID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	var body struct {
+		RequestID string `json:"requestId"`
+		Decision  string `json:"decision"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RequestID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "requestId and decision required"})
+		return
+	}
+	if body.Decision != "approved" && body.Decision != "denied" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "decision must be approved or denied"})
+		return
+	}
+	if _, err := s.db.Exec(
+		`UPDATE approval SET status = ?, resolved = ? WHERE id = ? AND session_id = ? AND status = 'pending'`,
+		body.Decision, time.Now().Unix(), body.RequestID, a.ID,
+	); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("approval resolved", "session_id", a.ID, "request_id", body.RequestID, "decision", body.Decision)
+	writeJSON(w, http.StatusOK, map[string]string{"resolved": body.Decision})
+}
+
+func (s *Server) handleKeyExport(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkKeyAccess(w, r, id) {
+		return
+	}
+	type sessRow struct {
+		id, cwd, status, model string
+	}
+	var sessList []sessRow
+	rows, err := s.db.Query(`SELECT id, cwd, status, model FROM session WHERE key_id = ?`, id)
+	if err == nil {
+		for rows.Next() {
+			var sr sessRow
+			if rows.Scan(&sr.id, &sr.cwd, &sr.status, &sr.model) == nil {
+				sessList = append(sessList, sr)
+			}
+		}
+		rows.Close()
+	}
+
+	sessions := []map[string]any{}
+	for _, sr := range sessList {
+		msgs := []map[string]any{}
+		mrows, _ := s.db.Query(`SELECT seq, role, content FROM message WHERE session_id = ? ORDER BY seq`, sr.id)
+		if mrows != nil {
+			for mrows.Next() {
+				var seq int64
+				var role, content string
+				if mrows.Scan(&seq, &role, &content) == nil {
+					msgs = append(msgs, map[string]any{"seq": seq, "role": role, "content": json.RawMessage(content)})
+				}
+			}
+			mrows.Close()
+		}
+		sessions = append(sessions, map[string]any{"id": sr.id, "cwd": sr.cwd, "status": sr.status, "model": sr.model, "messages": msgs})
+	}
+
+	memories := []map[string]any{}
+	mrows, err := s.db.Query(`SELECT key, content, scope, importance FROM memory WHERE key_id = ?`, id)
+	if err == nil {
+		for mrows.Next() {
+			var k, c, sc string
+			var imp int
+			if mrows.Scan(&k, &c, &sc, &imp) == nil {
+				memories = append(memories, map[string]any{"key": k, "content": c, "scope": sc, "importance": imp})
+			}
+		}
+		mrows.Close()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"key_id": id, "sessions": sessions, "memories": memories})
+}
+
+func (s *Server) handleKeyDataDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkKeyAccess(w, r, id) {
+		return
+	}
+	for _, a := range s.mgr.List() {
+		if a.KeyID == id && a.Status == "running" {
+			a.Interrupt()
+		}
+	}
+	if _, err := s.db.Exec(`DELETE FROM session WHERE key_id = ?`, id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if _, err := s.db.Exec(`DELETE FROM memory WHERE key_id = ?`, id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("key data cleared", "key_id", id)
+	writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {

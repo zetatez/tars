@@ -173,6 +173,9 @@ func (e *Evaluator) guard(effect string, level int, role, resource string) Decis
 		if e.cfg.SystemProt.AdminAuto && role == "admin" {
 			return Decision{Effect: EffectAllow, Level: level, NeedBackup: level == LevelSystem}
 		}
+		if e.cfg.Approval.Enabled {
+			return Decision{Effect: EffectAsk, Level: level, NeedBackup: level == LevelSystem}
+		}
 		return Decision{Effect: EffectDeny, Level: level, Reason: "system operation requires admin key"}
 	}
 	return Decision{Effect: EffectAllow, Level: level}

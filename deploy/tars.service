@@ -1,0 +1,21 @@
+[Unit]
+Description=tars AI agent server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tars
+Group=tars
+ExecStart=/usr/local/bin/tars --config /opt/tars/config.yaml
+Restart=on-failure
+RestartSec=5
+Environment=TARS_ADMIN_KEY=
+LimitNOFILE=65536
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=512
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

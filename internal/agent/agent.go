@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"tars/internal/audit"
 	"tars/internal/config"
 	"tars/internal/llm"
@@ -293,6 +295,29 @@ func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call,
 			Decision:  dec.Effect,
 			Args:      call.Args,
 		})
+		if dec.Effect == perm.EffectAsk {
+			resource := toolResource(call)
+			requestID := uuid.NewString()
+			now := time.Now().Unix()
+			_, _ = a.db.Exec(
+				`INSERT INTO approval (id, session_id, action, resource, status, created) VALUES (?, ?, ?, ?, 'pending', ?)`,
+				requestID, sess.SessionID(), call.Name, resource, now,
+			)
+			sess.Notify("approval.requested", map[string]any{"id": requestID, "action": call.Name, "resource": resource})
+			status := a.waitApproval(ctx, requestID)
+			if status != "approved" {
+				results[i] = tools.CallResult{ID: call.ID, Name: call.Name, Args: call.Args, Status: "denied", Result: tools.Result{"denied": true, "reason": "approval " + status}}
+				continue
+			}
+			if dec.NeedBackup {
+				if path, ok := call.Args["path"].(string); ok && path != "" {
+					perm.BackupBeforeWrite(a.db, a.cfg.DataDir, sess.SessionID(), resolveFull(scope, path))
+				}
+			}
+			allowed = append(allowed, call)
+			allowedIdx = append(allowedIdx, i)
+			continue
+		}
 		if dec.Effect != perm.EffectAllow {
 			results[i] = tools.CallResult{ID: call.ID, Name: call.Name, Args: call.Args, Status: "denied", Result: tools.Result{"denied": true, "reason": dec.Reason}}
 			continue
@@ -311,6 +336,36 @@ func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call,
 		results[idx] = execResults[k]
 	}
 	return results
+}
+
+func (a *Agent) waitApproval(ctx context.Context, requestID string) string {
+	timeout := a.cfg.Approval.Timeout.Duration
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var status string
+		if err := a.db.QueryRow(`SELECT status FROM approval WHERE id = ?`, requestID).Scan(&status); err == nil && status != "pending" {
+			return status
+		}
+		select {
+		case <-ctx.Done():
+			return "denied"
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return "denied"
+}
+
+func toolResource(call tools.Call) string {
+	if argv := toStringSlice(call.Args["argv"]); len(argv) > 0 {
+		return strings.Join(argv, " ")
+	}
+	if path, ok := call.Args["path"].(string); ok {
+		return path
+	}
+	return call.Name
 }
 
 func (a *Agent) evaluate(call tools.Call, role string) perm.Decision {
