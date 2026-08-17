@@ -10,15 +10,26 @@ import (
 	"os/signal"
 	"syscall"
 
+	"tars/internal/agent"
 	"tars/internal/api"
 	"tars/internal/auth"
 	"tars/internal/config"
+	"tars/internal/llm"
 	"tars/internal/log"
 	"tars/internal/session"
 	"tars/internal/store"
+	"tars/internal/tools"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "exec-helper" {
+		if err := tools.ExecHelper(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	configPath := flag.String("config", "/opt/tars/config.yaml", "config file path")
 	flag.Parse()
 
@@ -53,7 +64,11 @@ func main() {
 		logger.Warn("admin key generated, shown once")
 	}
 
-	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd)
+	llmClient := llm.New(cfg.LLM)
+	reg := tools.Default(cfg)
+	ag := agent.New(cfg, st.DB(), llmClient, reg, logger)
+
+	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd, ag)
 	srv := api.New(cfg, st.DB(), logger, mgr)
 
 	httpServer := &http.Server{

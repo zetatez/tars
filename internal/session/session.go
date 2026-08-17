@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"tars/internal/agent"
 )
 
 type Event struct {
@@ -36,14 +38,18 @@ type Actor struct {
 	Model  string
 	Status string
 
+	agent *agent.Agent
+
 	ch   chan PromptReq
 	stop chan struct{}
 
-	mu      sync.Mutex
-	subs    map[int64]*Subscriber
-	turnC   context.CancelFunc
-	nextSeq int64
-	subID   int64
+	mu        sync.Mutex
+	subs      map[int64]*Subscriber
+	turnC     context.CancelFunc
+	nextSeq   int64
+	subID     int64
+	lastIdem  string
+	processed map[string]struct{}
 
 	db  *sql.DB
 	log *slog.Logger
@@ -55,14 +61,16 @@ type Manager struct {
 	db         *sql.DB
 	log        *slog.Logger
 	defaultCwd string
+	agent      *agent.Agent
 }
 
-func NewManager(db *sql.DB, log *slog.Logger, defaultCwd string) *Manager {
+func NewManager(db *sql.DB, log *slog.Logger, defaultCwd string, ag *agent.Agent) *Manager {
 	return &Manager{
 		sessions:   make(map[string]*Actor),
 		db:         db,
 		log:        log,
 		defaultCwd: defaultCwd,
+		agent:      ag,
 	}
 }
 
@@ -80,16 +88,18 @@ func (m *Manager) Create(keyID, cwd, model string) (*Actor, error) {
 		return nil, err
 	}
 	a := &Actor{
-		ID:     id,
-		KeyID:  keyID,
-		Cwd:    cwd,
-		Model:  model,
-		Status: "idle",
-		ch:     make(chan PromptReq, 8),
-		stop:   make(chan struct{}),
-		subs:   make(map[int64]*Subscriber),
-		db:     m.db,
-		log:    m.log,
+		ID:        id,
+		KeyID:     keyID,
+		Cwd:       cwd,
+		Model:     model,
+		Status:    "idle",
+		agent:     m.agent,
+		ch:        make(chan PromptReq, 8),
+		stop:      make(chan struct{}),
+		subs:      make(map[int64]*Subscriber),
+		processed: make(map[string]struct{}),
+		db:        m.db,
+		log:       m.log,
 	}
 	var maxSeq int64
 	if err := m.db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM message WHERE session_id = ?`, id).Scan(&maxSeq); err != nil {
@@ -157,6 +167,13 @@ func (a *Actor) Prompt(req PromptReq) error {
 	default:
 	}
 	a.mu.Lock()
+	if req.IdempotencyKey != "" {
+		if _, dup := a.processed[req.IdempotencyKey]; dup {
+			a.mu.Unlock()
+			return errors.New("duplicate idempotency key")
+		}
+		a.processed[req.IdempotencyKey] = struct{}{}
+	}
 	if a.turnC != nil {
 		a.turnC()
 	}
@@ -191,13 +208,24 @@ func (a *Actor) runTurn(req PromptReq) {
 	a.setStatus("running")
 	a.broadcast(Event{Type: "turn.started"})
 
-	a.appendMessage("user", map[string]any{"v": 1, "text": req.Text, "files": req.Files})
-
-	_ = ctx
-	a.appendMessage("assistant", map[string]any{"v": 1, "text": "M1 骨架：agent loop 尚未接入（M2）"})
+	if a.agent != nil {
+		a.agent.RunTurn(ctx, a, agent.PromptReq{Text: req.Text, Files: req.Files})
+	} else {
+		a.appendMessage("assistant", map[string]any{"v": 1, "text": "agent 未配置"})
+	}
 
 	a.setStatus("idle")
-	a.broadcast(Event{Type: "turn.done"})
+}
+
+func (a *Actor) SessionID() string    { return a.ID }
+func (a *Actor) SessionKeyID() string { return a.KeyID }
+func (a *Actor) SessionCwd() string   { return a.Cwd }
+func (a *Actor) SessionModel() string { return a.Model }
+func (a *Actor) Append(role string, content any) {
+	a.appendMessage(role, content)
+}
+func (a *Actor) Notify(typ string, data any) {
+	a.broadcast(Event{Type: typ, Data: data})
 }
 
 func (a *Actor) appendMessage(role string, content any) {

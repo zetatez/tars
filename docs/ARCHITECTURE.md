@@ -39,9 +39,9 @@
   **可以分析、处理任意问题**（运维、开发、数据分析、文档、研究……由部署方的工具白名单
   决定能做什么），但**不做任何领域假设**——工具集、提示词、权限、记忆全部通用化。
 - 部署形态是**企业服务器上的常驻服务**（可被局域网内多人/多 agent 连接），因此"治理"是
-  一等约束（白名单、系统路径保护、审计、配额、隔离），但治理内容本身与领域无关。
+  一等约束（白名单、系统级操作护栏、审计、配额、隔离），但治理内容本身与领域无关。
 - 因为是通用 agent，**session 工作目录不限定**（要能处理任意问题）；系统安全靠
-  §13.2 系统关键路径保护兜底（任何时候不允许把操作系统搞崩）。
+  §13.2 系统级操作护栏兜底（操作分级 + 写前备份 + 不可逆黑名单，确保数据可恢复、系统不崩）。
 - tars **不是**实时协同编辑器（不需要毫秒级增量状态同步 → 不需要事件溯源）。
 - tars **不是**本地编码工具（不需要本地文件恢复 → 不需要 rollout/thread-store）。
 - tars 运行在**企业内网、多数调用无人值守**（LLM/其他 agent 触发为主 → 权限默认 deny
@@ -80,7 +80,7 @@ Client --prompt--> Session(actor) --LLM--> loop --tools(白名单)--> 回复
  | 14  | Session 日志    | **每 session 独立日志文件（滚动+保留）**                                            | 排障需求，与消息表互补                      |
  | 15  | 防状态丢失      | **SQLite WAL + FULL + flock + checkpoint + 先落库后广播**                           | 企业要求；已提交数据不丢                    |
  | 16  | 领域定位        | **通用 agent（无领域假设）+ 治理为纲**                                              | 运维仅是扩展示例（§6.1）                    |
- | 17  | 多租户/系统保护 | **per-key 逻辑隔离 + 系统关键路径最高优先级保护，cwd 不限定；读全可见、写限创建者** | 通用 + 防崩系统 + 只读监控（§13.1/13.2）    |
+ | 17  | 多租户/系统保护 | **per-key 逻辑隔离 + 系统级操作分级护栏（L4 不可逆拒绝 + L2/L3 备份/审批），cwd 不限定；读全可见、写限创建者** | 系统级 agent + 数据可恢复 + 系统不崩（§13.1/13.2） |
  | 18  | 资源/脱敏       | **配额 + 统一脱敏引擎 + 优雅关闭；网络不做访问控制**                                | 防失控/外泄/凭据沉淀（§13.3-13.6）          |
  | 19  | 存储配额        | **按类别配额 + 冷数据轮转 + 磁盘余量保护（不拒服务，仅防数据损坏）**                | 防磁盘写满损坏 WAL（§15.1/15.2）            |
  | 20  | 自身资源        | **只读 metrics 监控，不做内部降级**；硬限制交 systemd/cgroup                        | 不牺牲执行效率（§13.7）                     |
@@ -129,7 +129,7 @@ internal/session/       SessionManager + actor（邮箱、subscribers）
 internal/agent/         loop 纯函数 + compaction 触发
 internal/llm/           Provider 抽象（OpenAI-compatible 流式）
 internal/tools/         注册表 + 内置工具 + 输出截断/脱敏
-internal/perm/          白名单规则评估 + 系统保护路径（§13.2，ask 可选）
+internal/perm/          白名单规则评估 + 系统级操作护栏（§13.2，分级/备份/回滚）
 internal/store/         SQLite（WAL、单写连接、flock、checkpoint）
 internal/log/           slog + 自研轮转器（系统级 + session 级）
 internal/secret/        统一脱敏引擎（§13.5，日志/审计/LLM 上下文/记忆共用）
@@ -251,7 +251,7 @@ func (a *actor) loop() {
   配置 `prompt_mode`，可 per-session 覆盖（不同客户端可各自偏好）。
 
 **隔离**：actor 独享 `{cwd, env, history, policy, memory, ctx}`；cwd 不限定（§0，通用
-agent 处理任意问题），写操作物理边界由 §13.2 系统保护路径兜底；工具子进程用独立进程组
+agent 处理任意问题），系统级写操作由 §13.2 操作分级护栏管控（写前备份 + L4 黑名单）；工具子进程用独立进程组
 + 超时强杀 + rlimit（§6）。
 
 **广播**：`runTurn` 内每次状态变更（turn/tool/消息/审批）先写 SQLite 再向 `subs` 广播；
@@ -331,7 +331,7 @@ type Tool struct {
 - **argv 凭据检测**：执行前对 argv 应用 secrets 检测（§13.5），命中密钥模式 → **拒绝**
   并提示改用 stdin/env 注入（进程列表 `ps` 不可见明文凭据）；审计记录已脱敏。
 - **cwd 不限定**：session 可工作于任意目录（通用 agent 处理任意问题），**不做 cwd 白名单
-  限定**；写操作的物理边界由 §13.2 系统保护路径兜底。
+  限定**；系统级写操作由 §13.2 操作分级护栏管控（L2+ 备份、L4 拒绝）。
 - **白名单**：materialize 阶段按权限规则过滤，**仅暴露 allow 的工具给模型**（deny 的
   不出现，模型无从调用）。
 - **工具集（通用内核，首版 12 个）**：`exec_command` `read_file` `write_file` `edit_file`
@@ -366,14 +366,17 @@ rules（有序，最后匹配生效，默认 deny）：
 {action: "exec",       resource: "*",            effect: deny}   # 兜底
 {action: "exec",       resource: "grep *",       effect: allow}  # 示例白名单
 {action: "write_file", resource: "*.md",         effect: allow}
-{action: "write_file", resource: "/etc/**",      effect: deny}
+{action: "write_file", resource: "/etc/**",      effect: ask}    # L2 系统写 → 审批（§13.2）
 ```
 
 - **默认 deny**：无匹配规则 = 拒绝。部署方预配置白名单（命令/路径/工具），未列出的
   操作一律拒绝 → 无人值守场景不会卡死、不误执行。白名单内容与领域无关，由部署方定义
   其 agent 能"分析处理任意问题"的边界。
-- **优先级链（从高到低）**：`§13.2 系统保护路径（最高，不可覆盖）` > session 覆盖规则 >
+- **优先级链（从高到低）**：`§13.2 L4 破坏性命令（最高，不可覆盖）` > session 覆盖规则 >
   key 全局规则 > 默认 deny。
+- **系统级护栏叠加（§13.2）**：通过白名单后，再按操作分级评估——L2/L3 写系统路径/执行
+  特权命令时，admin key 白名单自动执行，普通 key 走 ask；L4 破坏性命令始终拒绝。写
+  系统文件前自动备份（可回滚）。
 - **可选 ask**（M3+，需配置 `approval.enabled: true` + 超时）：命中 ask → 挂 `approval`
   表 + 发 `approval.requested`（SSE）→ 客户端 `POST /approval` 裁决；超时按 deny。ask
   未开启时，ask 规则按 deny 处理。
@@ -467,6 +470,7 @@ GET  /api/v1/session/:id                 详情（含 status）              读
 GET  /api/v1/session/:id/messages        ?after=seq&limit=50           读全可见
 POST /api/v1/session/:id/prompt          {text, files?} → 202 {turnId}；Idempotency-Key 必填 仅创建者
 POST /api/v1/session/:id/interrupt       204                           仅创建者
+POST /api/v1/session/:id/rollback        回滚最近系统写（§13.2 写前备份） 仅创建者
 DELETE /api/v1/session/:id               删除（含消息/日志，见 §15.3） 仅创建者
 GET  /api/v1/session/:id/event           SSE（?after=seq 重放 + live） 读全可见
 GET  /api/v1/session/:id/approvals       pending 列表（ask 开启时）     读全可见
@@ -553,10 +557,14 @@ tenant:                         # 13.1 多租户隔离
   per_key_isolation: true       # 每 key 独立 rules/memory/agent 配置；cwd 不限定
   read_isolation: false         # true=读操作（messages/event）也仅限本 key（合规敏感环境）
 
-system_protect:                 # 13.2 系统关键路径保护（最高优先级，不可覆盖）
-  dirs: [/etc, /usr, /boot, /bin, /sbin, /var, /proc, /sys, /dev, /root]
-  files: [/etc/passwd, /etc/shadow, /etc/sudoers, /etc/fstab]
-  deny_commands: [mkfs*, shutdown, reboot, halt, poweroff, "rm -rf /*", "dd of=/dev/*"]
+system_protect:                 # 13.2 系统级操作安全护栏（操作分级）
+  system_paths: [/etc, /usr, /boot, /bin, /sbin, /var, /opt, /proc, /sys, /dev]
+  privileged_commands: [apt, apt-get, yum, dnf, pacman, zypper, systemctl, service,
+                        chmod, chown, useradd, usermod, passwd, mount, umount]
+  destructive_commands: [mkfs, fdisk, parted, wipefs, shred, grub-install,
+                         "rm -rf /", "dd of=/dev/"]
+  admin_auto: true               # admin key 白名单自动执行 L2/L3；普通 key 走 approval
+  backup: {enabled: true, keep: 5}   # 写前备份，保留最近 5 份（可回滚）
 
 quota:                          # 13.3 资源与配额
   global: {max_active_sessions: 100}
@@ -650,7 +658,7 @@ metrics:                        # 13.7 自身资源监控（只读，不降级�
 - **记忆隔离**：每 key 独立 `memory` 空间（§9），互不可见。
 - **不限定 cwd**：session 可创建于任意工作目录（通用 agent 要能处理任意问题）；
   `key_id` 隔离的是**逻辑数据**（规则/记忆/配置），**不是物理路径**。
-- 物理边界的兜底由 §13.2 的系统保护路径承担（而不是 cwd 白名单）。
+- 系统级操作的兜底由 §13.2 的操作分级护栏承担（而不是 cwd 白名单）。
 - **可见性模型（读全可见，写限创建者）**：
 
   | 操作                                                                                       | 语义             | 权限                                     |
@@ -665,25 +673,36 @@ metrics:                        # 13.7 自身资源监控（只读，不降级�
   - 跨 key 只读也会写入审计（`client_key`），确保监控行为可追溯；
   - 越权写返回 `403`；session 创建者的 `key_id` 不允许变更。
 
-### 13.2 系统关键路径保护（不可绕过，防止搞崩系统）
+### 13.2 系统级操作安全护栏（操作分级 + 受控执行）
 
-全局最高优先级规则，**任何 key、任何 session 都不可覆盖**：
+tars 是**系统级 agent**，需能修改系统配置、安装软件、改文件权限等，但必须"**数据可恢复
++ 系统不崩**"。安全模型从"路径黑名单"改为**操作分级 + 安全护栏**：
 
-```
-system_protect:
-  dirs:  [/etc, /usr, /boot, /bin, /sbin, /var, /proc, /sys, /dev, /root]
-  files: [/etc/passwd, /etc/shadow, /etc/sudoers, /etc/fstab]
-  deny_commands: [mkfs*, shutdown, reboot, halt, poweroff,
-                  "rm -rf /*", "chmod -R 777 /", "dd of=/dev/*"]
-```
+| 级别 | 典型操作 | 默认策略 |
+|---|---|---|
+| L0 读 | `read_file`/`grep`/`glob`/`ls` | 白名单 allow（读永远不受限） |
+| L1 工作区写 | 写 session 工作目录内文件 | 白名单 allow |
+| L2 系统写 | 改 `/etc`/`/usr`/`/opt` 等系统配置文件 | admin 白名单自动执行；普通 key 走 approval；**写前备份** |
+| L3 系统命令 | 装/卸软件、改文件权限、系统服务、用户管理 | 同上；全审计 |
+| L4 破坏性 | `mkfs`、`rm -rf /`、`dd` 到块设备、改引导、删关键数据 | **始终拒绝，任何 key 不可绕过** |
 
-- 写类操作（`write_file`/`edit_file`/`exec` 中的删除/移动/改权限/格式化/关机重启等）路径
-  先 `filepath.EvalSymlinks` 规范化，再与保护列表比对，命中即 deny 并写审计。
-- **TOCTOU 加固**：EvalSymlinks 检查与实际写入之间可能被 symlink-swap 利用（高安全场景）。
-  加固方式：写入走 dirfd + `openat` 相对路径（检查与打开在同一 dirfd 下，消除检查-使用
-  竞态）；低敏感部署可接受残余风险（文档记录此取舍）。
-- 读操作不受限（通用 agent 需要读取任意文件来分析问题）。
-- 这是"**任何时候都不会把操作系统搞崩溃**"的保证。
+**分级判定**：写路径命中 `system_paths`（`/etc /usr /boot /bin /sbin /var /opt /proc /sys
+/dev`）→ L2；命令命中 `privileged_commands`（`apt/yum/dnf/pacman/systemctl/chmod/chown/
+useradd/mount` 等）→ L3；命令命中 `destructive_commands`（`mkfs/dd 到块设备/rm -rf //fdisk/
+grub-install/shred` 等）→ L4。读操作永远 L0（系统级 agent 需要读取任意文件分析问题）。
+
+**安全护栏**：
+
+1. **写前备份（L2+）**：写系统文件前自动复制原文件到 `data_dir/backups/fs/<ts>/<path>`
+   并记录 before/after 哈希，保留最近 `backup.keep`（默认 5）份；提供回滚接口
+   `POST /session/:id/rollback`（§10）恢复。
+2. **全量审计（L2+）**：记录 before（哈希/摘要）+ after + 操作者 + 时间，脱敏。
+3. **L4 不可绕过**：`destructive_commands` 命中即拒绝，**任何 key、任何配置都不可覆盖**
+   ——这是系统安全底线（防格式化/删盘/改引导导致不可逆破坏）。
+4. **审批分权**：普通 key 的 L2/L3 走 approval（§7，超时 deny）；`admin_auto: true` 时
+   admin key 在白名单内自动执行（仍全审计）——兼顾无人值守效率与安全。
+5. **TOCTOU 加固**：L2 写入走 dirfd + `openat` 相对路径（检查与打开在同一 dirfd 下，消除
+   symlink-swap 竞态）。
 
 ### 13.3 资源与配额（防 agent 失控）
 
@@ -849,6 +868,9 @@ CREATE TABLE api_keys (
 ### 15.3 备份与归档（承接上文）
 
 - **备份**：`VACUUM INTO 'tars-backup.db'` 定时 + 升级前，只保留最近 `keep` 份。
+- **写前备份（fs）**：§13.2 L2+ 系统写操作前自动备份原文件到 `data_dir/backups/fs/`，
+  保留最近 `system_protect.backup.keep` 份，随 §15.1 清理循环轮转；`rollback` 接口按
+  before/after 哈希恢复。
 - **归档**：老 session（>N 天）归档 = **删除明细消息，替换为 `{kind:"compaction"}` 摘要**
   （真删数据，释放空间）。删除**分批短事务**（每批 500 行）执行，避免长写锁阻塞其他
   session 写入。**与 §8 上下文压缩解耦**：压缩不删消息（运行时行为），归档才删（存储
@@ -866,7 +888,7 @@ CREATE TABLE api_keys (
  | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
  | M1 骨架           | config/auth/store/消息表/REST+SSE/session actor、**系统日志轮转**、**WAL+synchronous=FULL+flock+checkpoint**、**优雅关闭**                                                                                                                                                                              |
  | M2 核心 agent     | LLM 流式（**idle_timeout/重试/备用模型**）、loop（**外部内容 untrusted 标记**）、exec（**rlimit + argv 凭据检测 + 直接 exec 语义**）/read/write/grep/glob/ls、**只读并行批次（max_parallel）**、prompt（幂等+中断重启）、截断防护、**agent 参数(max_steps/temperature)**、**SSE 心跳/续传、配置热重载** |
- | M3 治理           | 白名单权限 + **系统保护路径（TOCTOU 加固）** + 审计 + 记忆基础（表+FTS5+显式写入+注入）+ **session 独立日志**、**脱敏引擎**、**大输出落盘引用**、**API Key 管理（哈希+端点）**、**per-key 配置 + 远程配置接口（§13.1）**                                                                                |
+ | M3 治理           | 白名单权限 + **系统级操作护栏（L4 拒绝 + L2/L3 分级 + 写前备份/回滚 + TOCTOU）** + 审计 + 记忆基础（表+FTS5+显式写入+注入）+ **session 独立日志**、**脱敏引擎**、**大输出落盘引用**、**API Key 管理（哈希+端点）**、**per-key 配置 + 远程配置接口（§13.1）**                                                                                |
  | M4 增强           | compaction(切点摘要+overflow 重试，不删消息)、websearch/webfetch（能力开关）、记忆检索融合、**资源配额**、**存储配额与冷数据治理（§15）**、**read_isolation**、**成本统计**                                                                                                                             |
  | M5 Agent-to-Agent | MCP 端点 + `agent` 工具（子会话隔离）                                                                                                                                                                                                                                                                   |
  | M6 硬化           | ask 审批（可选）、记忆生命周期治理、session 保留/归档策略、限流调优、指标、Docker/systemd、**扩展工具机制（§6.1）**、**磁盘余量保护与告警（§15.2）**、**数据导出/删除（§13.8）、Prometheus 对接（§13.7）**                                                                                              |

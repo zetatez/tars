@@ -79,9 +79,16 @@ type Tenant struct {
 }
 
 type SystemProtect struct {
-	Dirs         []string `yaml:"dirs"`
-	Files        []string `yaml:"files"`
-	DenyCommands []string `yaml:"deny_commands"`
+	SystemPaths         []string `yaml:"system_paths"`
+	PrivilegedCommands  []string `yaml:"privileged_commands"`
+	DestructiveCommands []string `yaml:"destructive_commands"`
+	AdminAuto           bool     `yaml:"admin_auto"`
+	Backup              FSBackup `yaml:"backup"`
+}
+
+type FSBackup struct {
+	Enabled bool `yaml:"enabled"`
+	Keep    int  `yaml:"keep"`
 }
 
 type Quota struct {
@@ -238,11 +245,17 @@ func Default() *Config {
 			Model:        "deepseek-chat",
 		},
 		PromptMode: "interrupt",
-		Tenant:     Tenant{PerKeyIsolation: true, ReadIsolation: false},
+		LLM: LLM{
+			IdleTimeout: Duration{60 * time.Second},
+			Retry:       Retry{MaxAttempts: 3, Backoff: Duration{2 * time.Second}},
+		},
+		Tenant: Tenant{PerKeyIsolation: true, ReadIsolation: false},
 		SystemProt: SystemProtect{
-			Dirs:         []string{"/etc", "/usr", "/boot", "/bin", "/sbin", "/var", "/proc", "/sys", "/dev", "/root"},
-			Files:        []string{"/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/fstab"},
-			DenyCommands: []string{"mkfs*", "shutdown", "reboot", "halt", "poweroff", "rm -rf /*", "chmod -R 777 /", "dd of=/dev/*"},
+			SystemPaths:         []string{"/etc", "/usr", "/boot", "/bin", "/sbin", "/var", "/opt", "/proc", "/sys", "/dev"},
+			PrivilegedCommands:  []string{"apt", "apt-get", "yum", "dnf", "pacman", "zypper", "systemctl", "service", "chmod", "chown", "useradd", "usermod", "passwd", "mount", "umount"},
+			DestructiveCommands: []string{"mkfs", "fdisk", "parted", "wipefs", "shred", "grub-install", "rm -rf /", "dd of=/dev/"},
+			AdminAuto:           true,
+			Backup:              FSBackup{Enabled: true, Keep: 5},
 		},
 		Quota: Quota{
 			Global: GlobalQuota{MaxActiveSessions: 100},
