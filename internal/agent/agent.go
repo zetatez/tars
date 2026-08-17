@@ -39,13 +39,13 @@ type PromptReq struct {
 type Agent struct {
 	cfg   *config.Config
 	db    *sql.DB
-	llm   *llm.Client
+	llm   *llm.Pool
 	tools *tools.Registry
 	perm  *perm.Evaluator
 	log   *slog.Logger
 }
 
-func New(cfg *config.Config, db *sql.DB, llm *llm.Client, tools *tools.Registry, perm *perm.Evaluator, log *slog.Logger) *Agent {
+func New(cfg *config.Config, db *sql.DB, llm *llm.Pool, tools *tools.Registry, perm *perm.Evaluator, log *slog.Logger) *Agent {
 	return &Agent{cfg: cfg, db: db, llm: llm, tools: tools, perm: perm, log: log}
 }
 
@@ -88,13 +88,12 @@ func (a *Agent) RunTurn(ctx context.Context, sess Session, req PromptReq) {
 		}
 		messages := append([]llm.Message{{Role: "system", Content: sysPrompt}}, history...)
 
-		res, err := a.llm.StreamChat(ctx, llm.ChatRequest{
+		res, err := a.llm.Chat(ctx, llm.ChatRequest{
 			Model:       model,
 			Messages:    messages,
 			Tools:       toolDefs,
 			Temperature: a.cfg.Agent.Temperature,
 			MaxTokens:   a.cfg.Agent.MaxTokens,
-			Stream:      true,
 		})
 		if err != nil {
 			if errors.Is(err, llm.ErrContextOverflow) {
@@ -199,7 +198,7 @@ func (a *Agent) shouldCompact(history []llm.Message) bool {
 	for _, m := range history {
 		total += estimateTokens(m.Content)
 	}
-	window := a.cfg.LLM.ContextWindow
+	window := a.llm.ContextWindow()
 	if window <= 0 {
 		window = 128000
 	}
@@ -241,12 +240,10 @@ func (a *Agent) summarize(ctx context.Context, head []llm.Message) (string, erro
 		sb.WriteString(m.Role + ": " + m.Content + "\n")
 	}
 	prompt := "请将以下对话历史压缩为结构化摘要，包含：Objective（目标）、关键决策、当前状态、下一步、相关文件。\n\n" + sb.String()
-	res, err := a.llm.StreamChat(ctx, llm.ChatRequest{
-		Model:       a.cfg.Agent.Model,
+	res, err := a.llm.Chat(ctx, llm.ChatRequest{
 		Messages:    []llm.Message{{Role: "user", Content: prompt}},
 		Temperature: 0,
 		MaxTokens:   1024,
-		Stream:      true,
 	})
 	if err != nil {
 		return "", err

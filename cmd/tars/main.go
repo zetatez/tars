@@ -67,10 +67,10 @@ func main() {
 		logger.Warn("admin key generated, shown once")
 	}
 
-	llmClient := llm.New(cfg.LLM)
+	llmPool := llm.NewPool(cfg.LLM)
 	reg := tools.Default(cfg)
 	permEval := perm.New(cfg)
-	ag := agent.New(cfg, st.DB(), llmClient, reg, permEval, logger)
+	ag := agent.New(cfg, st.DB(), llmPool, reg, permEval, logger)
 
 	qc := quota.New(cfg, st.DB())
 	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd, ag, cfg.DataDir, cfg.Session)

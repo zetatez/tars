@@ -59,13 +59,21 @@ type Agent struct {
 }
 
 type LLM struct {
-	BaseURL        string   `yaml:"base_url"`
-	APIKey         string   `yaml:"api_key"`
-	Model          string   `yaml:"model"`
-	ContextWindow  int      `yaml:"context_window"`
-	IdleTimeout    Duration `yaml:"idle_timeout"`
-	Retry          Retry    `yaml:"retry"`
-	FallbackModels []string `yaml:"fallback_models"`
+	Strategy    string        `yaml:"strategy"`
+	IdleTimeout Duration      `yaml:"idle_timeout"`
+	Retry       Retry         `yaml:"retry"`
+	Providers   []LLMProvider `yaml:"providers"`
+}
+
+type LLMProvider struct {
+	Name          string `yaml:"name"`
+	Type          string `yaml:"type"`
+	BaseURL       string `yaml:"base_url"`
+	APIKey        string `yaml:"api_key"`
+	Model         string `yaml:"model"`
+	ContextWindow int    `yaml:"context_window"`
+	Priority      int    `yaml:"priority"`
+	Weight        int    `yaml:"weight"`
 }
 
 type Retry struct {
@@ -246,8 +254,20 @@ func Default() *Config {
 		},
 		PromptMode: "interrupt",
 		LLM: LLM{
+			Strategy:    "priority",
 			IdleTimeout: Duration{60 * time.Second},
 			Retry:       Retry{MaxAttempts: 3, Backoff: Duration{2 * time.Second}},
+			Providers: []LLMProvider{
+				{
+					Name:          "deepseek",
+					Type:          "openai",
+					BaseURL:       "https://api.deepseek.com/v1",
+					Model:         "deepseek-chat",
+					ContextWindow: 128000,
+					Priority:      1,
+					Weight:        1,
+				},
+			},
 		},
 		Tenant: Tenant{PerKeyIsolation: true, ReadIsolation: false},
 		SystemProt: SystemProtect{
