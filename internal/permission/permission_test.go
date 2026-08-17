@@ -14,6 +14,8 @@ func testCfg() *config.Config {
 		{Action: "exec", Resource: "grep *", Effect: "allow"},
 		{Action: "read_file", Resource: "/home/agent/work/**", Effect: "allow"},
 		{Action: "write_file", Resource: "*", Effect: "allow"},
+		{Action: "edit_file", Resource: "*", Effect: "allow"},
+		{Action: "apply_patch", Resource: "*", Effect: "allow"},
 	}
 	return cfg
 }
@@ -55,12 +57,20 @@ func TestExecRule(t *testing.T) {
 	}
 }
 
-func TestEditFileActionNormalize(t *testing.T) {
+func TestEditFileAction(t *testing.T) {
 	e := New(testCfg())
 	dec := e.EvaluateToolCall("edit_file", "edit_file", "path",
 		map[string]any{"path": "/home/agent/work/a.txt"}, "user", "")
 	if dec.Effect != EffectAllow {
-		t.Errorf("edit_file should normalize to write_file action: %+v", dec)
+		t.Errorf("edit_file should match its own rule: %+v", dec)
+	}
+}
+
+func TestApplyPatchAction(t *testing.T) {
+	e := New(testCfg())
+	dec := e.EvaluatePatch("*** Begin Patch\n*** Update File: /home/agent/work/a.txt\n@@\n-old\n+new\n*** End Patch", "user", "")
+	if dec.Effect != EffectAllow {
+		t.Errorf("apply_patch should match its own rule: %+v", dec)
 	}
 }
 

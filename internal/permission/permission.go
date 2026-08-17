@@ -60,7 +60,7 @@ func (e *Evaluator) EvaluateToolCall(name, policyAction, resourceKey string, arg
 	switch policyAction {
 	case "exec":
 		return e.evalExec(name, args, role, cwd)
-	case "write_file", "edit_file":
+	case "write_file", "edit_file", "apply_patch":
 		return e.evalWrite(policyAction, args, role, cwd)
 	default:
 		return e.evalRead(policyAction, resourceKey, args)
@@ -120,7 +120,7 @@ func (e *Evaluator) EvaluatePatch(patch, role, cwd string) Decision {
 			continue
 		}
 		path := ResolvePath(cwd, strings.TrimSpace(strings.TrimPrefix(trimmed, "*** Update File: ")))
-		dec := e.evalWrite("write_file", map[string]any{"path": path}, role, cwd)
+		dec := e.evalWrite("apply_patch", map[string]any{"path": path}, role, cwd)
 		if severity(dec) > severity(worst) {
 			worst = dec
 		}
@@ -149,7 +149,7 @@ func (e *Evaluator) guard(effect string, level int, role, resource string) Decis
 		if e.cfg.SystemProt.AdminAuto && role == "admin" {
 			return Decision{Effect: EffectAllow, Level: level, NeedBackup: level == LevelSystem}
 		}
-		if e.cfg.Approval.Enabled {
+		if e.cfg.Permissions.Approval.Enabled {
 			return Decision{Effect: EffectAsk, Level: level, NeedBackup: level == LevelSystem}
 		}
 		return Decision{Effect: EffectDeny, Level: level, Reason: "system operation requires admin key"}
@@ -157,11 +157,11 @@ func (e *Evaluator) guard(effect string, level int, role, resource string) Decis
 	return Decision{Effect: EffectAllow, Level: level}
 }
 
-func normalizeAction(a string) string {
-	if a == "edit_file" {
-		return "write_file"
+func matchAction(ruleAction, action string) bool {
+	if ruleAction == "*" {
+		return true
 	}
-	return a
+	return ruleAction == action
 }
 
 func (e *Evaluator) matchRule(action, resource string, argv []string) string {
@@ -178,11 +178,9 @@ func (e *Evaluator) matchRule(action, resource string, argv []string) string {
 	return effect
 }
 
-func matchAction(ruleAction, action string) bool {
-	if ruleAction == "*" {
-		return true
-	}
-	return normalizeAction(ruleAction) == normalizeAction(action)
+// ActionAllowed 用于 materialize：判断某动作是否被允许（不看具体资源）。
+func (e *Evaluator) ActionAllowed(policyAction string) bool {
+	return e.matchRule(policyAction, "", nil) == EffectAllow
 }
 
 func matchResource(pattern, resource string, argv []string) bool {

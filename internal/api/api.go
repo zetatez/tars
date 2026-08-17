@@ -93,7 +93,7 @@ func keyInfo(r *http.Request) auth.KeyInfo {
 }
 
 func (s *Server) checkRead(w http.ResponseWriter, r *http.Request, sessionKeyID string) bool {
-	if !s.cfg.Tenant.ReadIsolation {
+	if !s.cfg.ReadIsolation {
 		return true
 	}
 	ki := keyInfo(r)
@@ -402,7 +402,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	list := s.mgr.List()
 	out := make([]map[string]any, 0, len(list))
 	for _, a := range list {
-		if s.cfg.Tenant.ReadIsolation && ki.Role != auth.RoleAdmin && a.KeyID != ki.KeyID {
+		if s.cfg.ReadIsolation && ki.Role != auth.RoleAdmin && a.KeyID != ki.KeyID {
 			continue
 		}
 		out = append(out, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": a.Model})

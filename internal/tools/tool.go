@@ -92,11 +92,8 @@ type CallResult struct {
 	Status string `json:"status"`
 }
 
-func (r *Registry) ExecuteBatch(ctx context.Context, calls []Call, sc *Scope, maxParallel int) []CallResult {
+func (r *Registry) ExecuteBatch(ctx context.Context, calls []Call, sc *Scope) []CallResult {
 	results := make([]CallResult, len(calls))
-	if maxParallel <= 0 {
-		maxParallel = 1
-	}
 	i := 0
 	for i < len(calls) {
 		t, _ := r.Get(calls[i].Name)
@@ -118,7 +115,7 @@ func (r *Registry) ExecuteBatch(ctx context.Context, calls []Call, sc *Scope, ma
 			}
 			j++
 		}
-		r.execParallel(ctx, calls[i:j], results[i:j], sc, maxParallel)
+		r.execParallel(ctx, calls[i:j], results[i:j], sc)
 		i = j
 	}
 	return results
@@ -137,15 +134,12 @@ func (r *Registry) execOne(ctx context.Context, call Call, t *Tool, sc *Scope) C
 	return cr
 }
 
-func (r *Registry) execParallel(ctx context.Context, calls []Call, results []CallResult, sc *Scope, maxParallel int) {
-	sem := make(chan struct{}, maxParallel)
+func (r *Registry) execParallel(ctx context.Context, calls []Call, results []CallResult, sc *Scope) {
 	var wg sync.WaitGroup
 	for k := range calls {
 		wg.Add(1)
 		go func(k int) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
 			t, _ := r.Get(calls[k].Name)
 			results[k] = r.execOne(ctx, calls[k], t, sc)
 		}(k)

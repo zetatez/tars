@@ -122,43 +122,37 @@ func extractKey(r *http.Request) string {
 	return ""
 }
 
-func EnsureAdmin(db *sql.DB, adminKey string) (string, error) {
+// EnsureAdmin 在库中无 admin 时，将 config 提供的 key 注册为 admin。
+// key 格式：<key_id>_<hex secret>。不生成、不从环境变量读取。
+func EnsureAdmin(db *sql.DB, adminKey string) error {
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE role = 'admin'`).Scan(&count); err != nil {
-		return "", err
+		return err
 	}
-	if count > 0 {
-		return "", nil
+	if count > 0 || adminKey == "" {
+		return nil
 	}
-	if adminKey != "" {
-		idx := strings.IndexByte(adminKey, '_')
-		if idx <= 0 {
-			return "", errors.New("invalid admin key format")
-		}
-		keyID := adminKey[:idx]
-		secretHex := adminKey[idx+1:]
-		secret, err := hex.DecodeString(secretHex)
-		if err != nil {
-			return "", err
-		}
-		salt := make([]byte, saltLen)
-		if _, err := rand.Read(salt); err != nil {
-			return "", err
-		}
-		hash, err := scrypt.Key(secret, salt, scryptN, scryptR, scryptP, keyLen)
-		if err != nil {
-			return "", err
-		}
-		keyHash := hex.EncodeToString(salt) + ":" + hex.EncodeToString(hash)
-		_, err = db.Exec(
-			`INSERT INTO api_keys (key_id, key_hash, role, active, created) VALUES (?, ?, 'admin', 1, unixepoch())`,
-			keyID, keyHash,
-		)
-		return "", err
+	idx := strings.IndexByte(adminKey, '_')
+	if idx <= 0 {
+		return errors.New("invalid admin key format, want <key_id>_<hex secret>")
 	}
-	plain, _, err := CreateKey(db, RoleAdmin)
+	keyID := adminKey[:idx]
+	secret, err := hex.DecodeString(adminKey[idx+1:])
 	if err != nil {
-		return "", err
+		return errors.New("invalid admin key format, want <key_id>_<hex secret>")
 	}
-	return plain, nil
+	salt := make([]byte, saltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return err
+	}
+	hash, err := scrypt.Key(secret, salt, scryptN, scryptR, scryptP, keyLen)
+	if err != nil {
+		return err
+	}
+	keyHash := hex.EncodeToString(salt) + ":" + hex.EncodeToString(hash)
+	_, err = db.Exec(
+		`INSERT INTO api_keys (key_id, key_hash, role, active, created) VALUES (?, ?, 'admin', 1, unixepoch())`,
+		keyID, keyHash,
+	)
+	return err
 }

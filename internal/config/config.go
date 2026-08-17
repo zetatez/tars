@@ -25,29 +25,28 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 }
 
 type Config struct {
-	Listen      string        `yaml:"listen"`
-	DataDir     string        `yaml:"data_dir"`
-	DefaultCwd  string        `yaml:"default_cwd"`
-	Agent       Agent         `yaml:"agent"`
-	LLM         LLM           `yaml:"llm"`
-	PromptMode  string        `yaml:"prompt_mode"`
-	Tenant      Tenant        `yaml:"tenant"`
-	SystemProt  SystemProtect `yaml:"system_protect"`
-	Quota       Quota         `yaml:"quota"`
-	Network     Network       `yaml:"network"`
-	Secrets     Secrets       `yaml:"secrets"`
-	Log         Log           `yaml:"log"`
-	Session     Session       `yaml:"session"`
-	Permissions Permissions   `yaml:"permissions"`
-	Approval    Approval      `yaml:"approval"`
-	Compaction  Compaction    `yaml:"compaction"`
-	Memory      Memory        `yaml:"memory"`
-	Tools       Tools         `yaml:"tools"`
-	ExtTools    []ExtTool     `yaml:"ext_tools"`
-	Storage     Storage       `yaml:"storage"`
-	StorageQ    StorageQuota  `yaml:"storage_quota"`
-	Shutdown    Shutdown      `yaml:"shutdown"`
-	Metrics     Metrics       `yaml:"metrics"`
+	Listen        string        `yaml:"listen"`
+	DataDir       string        `yaml:"data_dir"`
+	DefaultCwd    string        `yaml:"default_cwd"`
+	AdminKey      string        `yaml:"admin_key"`
+	Agent         Agent         `yaml:"agent"`
+	LLM           LLM           `yaml:"llm"`
+	PromptMode    string        `yaml:"prompt_mode"`
+	ReadIsolation bool          `yaml:"read_isolation"`
+	SystemProt    SystemProtect `yaml:"system_protect"`
+	Quota         Quota         `yaml:"quota"`
+	Network       Network       `yaml:"network"`
+	Secrets       []string      `yaml:"secrets"`
+	Log           Log           `yaml:"log"`
+	Session       Session       `yaml:"session"`
+	Permissions   Permissions   `yaml:"permissions"`
+	Compaction    Compaction    `yaml:"compaction"`
+	Memory        Memory        `yaml:"memory"`
+	Tools         Tools         `yaml:"tools"`
+	ExtTools      []ExtTool     `yaml:"ext_tools"`
+	Storage       Storage       `yaml:"storage"`
+	Shutdown      Duration      `yaml:"shutdown"`
+	Metrics       Metrics       `yaml:"metrics"`
 }
 
 type Agent struct {
@@ -99,32 +98,14 @@ type FSBackup struct {
 }
 
 type Quota struct {
-	Global GlobalQuota `yaml:"global"`
-	PerKey PerKeyQuota `yaml:"per_key"`
-}
-
-type GlobalQuota struct {
-	MaxActiveSessions int `yaml:"max_active_sessions"`
-}
-
-type PerKeyQuota struct {
-	MaxConcurrentTurns int `yaml:"max_concurrent_turns"`
-	MaxSessionsPerDay  int `yaml:"max_sessions_per_day"`
-	MaxTokensPerDay    int `yaml:"max_tokens_per_day"`
+	MaxActiveSessions        int `yaml:"max_active_sessions"`
+	MaxConcurrentTurnsPerKey int `yaml:"max_concurrent_turns_per_key"`
 }
 
 type Network struct {
-	WebSearch      Feature  `yaml:"websearch"`
-	WebFetch       Feature  `yaml:"webfetch"`
+	WebSearch      bool     `yaml:"websearch"`
+	WebFetch       bool     `yaml:"webfetch"`
 	ConnectTimeout Duration `yaml:"connect_timeout"`
-}
-
-type Feature struct {
-	Enabled bool `yaml:"enabled"`
-}
-
-type Secrets struct {
-	Patterns []string `yaml:"patterns"`
 }
 
 type Log struct {
@@ -142,7 +123,8 @@ type Session struct {
 }
 
 type Permissions struct {
-	Rules []Rule `yaml:"rules"`
+	Rules    []Rule   `yaml:"rules"`
+	Approval Approval `yaml:"approval"`
 }
 
 type Rule struct {
@@ -162,9 +144,9 @@ type Compaction struct {
 }
 
 type Memory struct {
-	Inject   Inject   `yaml:"inject"`
-	Extract  Extract  `yaml:"extract"`
-	Embedder Embedder `yaml:"embedder"`
+	Inject   Inject  `yaml:"inject"`
+	Extract  Extract `yaml:"extract"`
+	Embedder string  `yaml:"embedder"`
 }
 
 type Inject struct {
@@ -179,27 +161,14 @@ type Extract struct {
 	TTLCap           Duration `yaml:"ttl_cap"`
 }
 
-type Embedder struct {
-	Provider string `yaml:"provider"`
-}
-
 type Tools struct {
-	Exec        Exec    `yaml:"exec"`
-	WebSearch   Feature `yaml:"websearch"`
-	MaxParallel int     `yaml:"max_parallel"`
+	Exec Exec `yaml:"exec"`
 }
 
 type Exec struct {
 	Enabled   bool     `yaml:"enabled"`
 	Timeout   Duration `yaml:"timeout"`
 	MaxOutput int      `yaml:"max_output"`
-	RLimit    RLimit   `yaml:"rlimit"`
-}
-
-type RLimit struct {
-	MemMB      int `yaml:"mem_mb"`
-	CPUSeconds int `yaml:"cpu_seconds"`
-	MaxProcs   int `yaml:"max_procs"`
 }
 
 type ExtTool struct {
@@ -212,9 +181,10 @@ type ExtTool struct {
 }
 
 type Storage struct {
-	Synchronous           string   `yaml:"synchronous"`
-	WALCheckpointInterval Duration `yaml:"wal_checkpoint_interval"`
-	BusyTimeout           Duration `yaml:"busy_timeout"`
+	Synchronous           string       `yaml:"synchronous"`
+	WALCheckpointInterval Duration     `yaml:"wal_checkpoint_interval"`
+	BusyTimeout           Duration     `yaml:"busy_timeout"`
+	Quota                 StorageQuota `yaml:"quota"`
 }
 
 type StorageQuota struct {
@@ -228,10 +198,6 @@ type Category struct {
 	MaxSizeMB     int `yaml:"max_size_mb"`
 	RetentionDays int `yaml:"retention_days"`
 	Keep          int `yaml:"keep"`
-}
-
-type Shutdown struct {
-	GracefulTimeout Duration `yaml:"graceful_timeout"`
 }
 
 type Metrics struct {
@@ -267,7 +233,7 @@ func Default() *Config {
 				},
 			},
 		},
-		Tenant: Tenant{PerKeyIsolation: true, ReadIsolation: false},
+		ReadIsolation: false,
 		SystemProt: SystemProtect{
 			SystemPaths:         []string{"/etc", "/usr", "/boot", "/bin", "/sbin", "/var", "/opt", "/proc", "/sys", "/dev"},
 			PrivilegedCommands:  []string{"apt", "apt-get", "yum", "dnf", "pacman", "zypper", "systemctl", "service", "chmod", "chown", "useradd", "usermod", "passwd", "mount", "umount"},
@@ -276,41 +242,45 @@ func Default() *Config {
 			Backup:              FSBackup{Enabled: true, Keep: 5},
 		},
 		Quota: Quota{
-			Global: GlobalQuota{MaxActiveSessions: 100},
-			PerKey: PerKeyQuota{MaxConcurrentTurns: 5, MaxSessionsPerDay: 200, MaxTokensPerDay: 1000000},
+			MaxActiveSessions:        100,
+			MaxConcurrentTurnsPerKey: 32,
 		},
-		Network:     Network{WebSearch: Feature{Enabled: true}, WebFetch: Feature{Enabled: true}, ConnectTimeout: Duration{10 * time.Second}},
-		Secrets:     Secrets{Patterns: []string{}},
-		Log:         Log{Level: "info", Dir: "", MaxSizeMB: 100, RetentionDays: 30, JSON: true},
-		Session:     Session{RetentionDays: 30, LogMaxSizeMB: 10, LogMaxBackups: 3},
-		Permissions: Permissions{},
-		Approval:    Approval{Enabled: false, Timeout: Duration{5 * time.Minute}},
-		Compaction:  Compaction{ReserveTokens: 20000, MinRecentTokens: 8000},
+		Network: Network{WebSearch: true, WebFetch: true, ConnectTimeout: Duration{16 * time.Second}},
+		Secrets: []string{},
+		Log:     Log{Level: "info", Dir: "", MaxSizeMB: 100, RetentionDays: 30, JSON: true},
+		Session: Session{RetentionDays: 30, LogMaxSizeMB: 10, LogMaxBackups: 3},
+		Permissions: Permissions{
+			Rules:    []Rule{},
+			Approval: Approval{Enabled: false, Timeout: Duration{5 * time.Minute}},
+		},
+		Compaction: Compaction{ReserveTokens: 20000, MinRecentTokens: 8000},
 		Memory: Memory{
 			Inject:   Inject{MaxEntries: 5, MaxTokens: 1500},
 			Extract:  Extract{Enabled: false, MaxPerSessionDay: 50, ImportanceCap: 2, TTLCap: Duration{30 * 24 * time.Hour}},
-			Embedder: Embedder{Provider: "none"},
+			Embedder: "none",
 		},
 		Tools: Tools{
-			Exec:        Exec{Enabled: true, Timeout: Duration{2 * time.Minute}, MaxOutput: 1048576, RLimit: RLimit{MemMB: 512, CPUSeconds: 30, MaxProcs: 16}},
-			WebSearch:   Feature{Enabled: false},
-			MaxParallel: 4,
+			Exec: Exec{Enabled: true, Timeout: Duration{2 * time.Minute}, MaxOutput: 1048576},
 		},
-		Storage: Storage{Synchronous: "full", WALCheckpointInterval: Duration{5 * time.Minute}, BusyTimeout: Duration{5 * time.Second}},
-		StorageQ: StorageQuota{
-			ScanInterval: Duration{10 * time.Minute},
-			MinFreeMB:    512,
-			HardCapMB:    8192,
-			Categories: map[string]Category{
-				"db":          {MaxSizeMB: 1024},
-				"audit":       {MaxSizeMB: 512, RetentionDays: 90},
-				"log":         {MaxSizeMB: 1024, RetentionDays: 30},
-				"session_log": {MaxSizeMB: 2048, RetentionDays: 30},
-				"backup":      {MaxSizeMB: 2048, Keep: 7},
-				"tmp":         {MaxSizeMB: 1024},
+		Storage: Storage{
+			Synchronous:           "full",
+			WALCheckpointInterval: Duration{5 * time.Minute},
+			BusyTimeout:           Duration{5 * time.Second},
+			Quota: StorageQuota{
+				ScanInterval: Duration{10 * time.Minute},
+				MinFreeMB:    512,
+				HardCapMB:    8192,
+				Categories: map[string]Category{
+					"db":          {MaxSizeMB: 1024},
+					"audit":       {MaxSizeMB: 512, RetentionDays: 90},
+					"log":         {MaxSizeMB: 1024, RetentionDays: 30},
+					"session_log": {MaxSizeMB: 2048, RetentionDays: 30},
+					"backup":      {MaxSizeMB: 2048, Keep: 7},
+					"tmp":         {MaxSizeMB: 1024},
+				},
 			},
 		},
-		Shutdown: Shutdown{GracefulTimeout: Duration{30 * time.Second}},
+		Shutdown: Duration{30 * time.Second},
 		Metrics:  Metrics{Interval: Duration{5 * time.Second}, HistorySeconds: 600},
 	}
 }

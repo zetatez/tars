@@ -354,7 +354,7 @@ func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call,
 		allowedIdx = append(allowedIdx, i)
 	}
 
-	execResults := a.tools.ExecuteBatch(ctx, allowed, scope, a.cfg.Tools.MaxParallel)
+	execResults := a.tools.ExecuteBatch(ctx, allowed, scope)
 	for k, idx := range allowedIdx {
 		results[idx] = execResults[k]
 	}
@@ -362,7 +362,7 @@ func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call,
 }
 
 func (a *Agent) waitApproval(ctx context.Context, requestID string) string {
-	timeout := a.cfg.Approval.Timeout.Duration
+	timeout := a.cfg.Permissions.Approval.Timeout.Duration
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
@@ -512,30 +512,15 @@ func (a *Agent) loadHistory(sess Session) []llm.Message {
 
 func (a *Agent) allowedTools() []llm.ToolDef {
 	all := a.tools.List()
-	rules := a.cfg.Permissions.Rules
-	if len(rules) == 0 {
-		return a.tools.ToLLMTools()
-	}
-	allow := map[string]bool{}
-	for _, t := range all {
-		effect := "deny"
-		for _, r := range rules {
-			if r.Action == t.PolicyAction {
-				effect = r.Effect
-			}
-		}
-		if effect == "allow" || t.PolicyAction == "task_done" || t.PolicyAction == "memory_store" || t.PolicyAction == "memory_query" {
-			allow[t.Name] = true
-		}
-	}
 	out := make([]llm.ToolDef, 0, len(all))
 	for _, t := range all {
-		if allow[t.Name] {
-			out = append(out, llm.ToolDef{
-				Type:     "function",
-				Function: llm.FuncDef{Name: t.Name, Description: t.Description, Parameters: t.Params},
-			})
+		if !internalTool(t.Name) && !a.perm.ActionAllowed(t.PolicyAction) {
+			continue
 		}
+		out = append(out, llm.ToolDef{
+			Type:     "function",
+			Function: llm.FuncDef{Name: t.Name, Description: t.Description, Parameters: t.Params},
+		})
 	}
 	return out
 }

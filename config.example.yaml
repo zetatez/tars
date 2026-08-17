@@ -1,9 +1,13 @@
 # tars config — default: /opt/tars/config.yaml (--config to override)
+# Omitted fields use built-in defaults.
 
 listen: ":8899"
 data_dir: /opt/tars/data
 default_cwd: /home/agent/work
 prompt_mode: interrupt # interrupt | queue
+
+# required: initial admin key, format <key_id>_<hex secret>
+admin_key: "00000000-0000-0000-0000-000000000000_0000000000000000000000000000000000000000000000000000000000000000"
 
 agent:
   system_prompt: |-
@@ -29,11 +33,6 @@ llm:
       model: "deepseek-chat"
       context_window: 128000
       priority: 1
-
-# ---- governance ----
-tenant:
-  per_key_isolation: true
-  read_isolation: false
 
 system_protect:
   system_paths:
@@ -72,123 +71,53 @@ system_protect:
     - grub-install
     - "rm -rf /"
     - "dd of=/dev/"
-  admin_auto: true
+  admin_auto: true # admin runs L2/L3 without approval
   backup:
-    enabled: true
+    enabled: true # backup before system writes
     keep: 5
 
 quota:
-  global:
-    max_active_sessions: 100
-  per_key:
-    max_concurrent_turns: 5
-    max_sessions_per_day: 200
-    max_tokens_per_day: 1000000
+  max_active_sessions: 100 # global
+  max_concurrent_turns_per_key: 32 # per-key
 
-network:
-  websearch:
-    enabled: true
-  webfetch:
-    enabled: true
-  connect_timeout: 10s
-
-secrets:
-  patterns: []
-
-# ---- permissions ----
 permissions:
   rules:
     - action: exec
       resource: "*"
-      effect: deny
-    - action: exec
-      resource: "grep *"
       effect: allow
     - action: read_file
-      resource: "/home/agent/work/**"
+      resource: "*"
       effect: allow
+    - action: write_file
+      resource: "*"
+      effect: allow
+    - action: edit_file
+      resource: "*"
+      effect: allow
+    - action: apply_patch
+      resource: "*"
+      effect: allow
+    - action: grep
+      resource: "*"
+      effect: allow
+    - action: glob
+      resource: "*"
+      effect: allow
+    - action: ls
+      resource: "*"
+      effect: allow
+    - action: webfetch
+      resource: "*"
+      effect: allow
+    - action: websearch
+      resource: "*"
+      effect: allow
+  approval:
+    enabled: false # ask approval for non-admin L2/L3
+    timeout: 300s
 
-approval:
-  enabled: false
-  timeout: 300s
-
-# ---- tools ----
 tools:
   exec:
     enabled: true
     timeout: 120s
     max_output: 1048576
-    rlimit:
-      mem_mb: 512
-      cpu_seconds: 30
-      max_procs: 16
-  websearch:
-    enabled: false
-  max_parallel: 4
-
-ext_tools: []
-
-# ---- context & memory ----
-compaction:
-  reserve_tokens: 20000
-  min_recent_tokens: 8000
-
-memory:
-  inject:
-    max_entries: 5
-    max_tokens: 1500
-  extract:
-    enabled: false
-    max_per_session_day: 50
-    importance_cap: 2
-    ttl_cap: 720h
-  embedder:
-    provider: none
-
-# ---- logs ----
-log:
-  level: info
-  max_size_mb: 100
-  retention_days: 30
-  json: true
-
-session:
-  retention_days: 30
-  log_max_size_mb: 10
-  log_max_backups: 3
-
-# ---- storage ----
-storage:
-  synchronous: full
-  wal_checkpoint_interval: 5m
-  busy_timeout: 5s
-
-storage_quota:
-  scan_interval: 10m
-  min_free_mb: 512
-  hard_cap_mb: 8192
-  categories:
-    db:
-      max_size_mb: 1024
-    audit:
-      max_size_mb: 512
-      retention_days: 90
-    log:
-      max_size_mb: 1024
-      retention_days: 30
-    session_log:
-      max_size_mb: 2048
-      retention_days: 30
-    backup:
-      max_size_mb: 2048
-      keep: 7
-    tmp:
-      max_size_mb: 1024
-
-# ---- ops ----
-shutdown:
-  graceful_timeout: 30s
-
-metrics:
-  interval: 5s
-  history_seconds: 600

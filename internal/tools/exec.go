@@ -7,10 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-
-	"golang.org/x/sys/unix"
 
 	"tars/internal/config"
 	"tars/internal/secret"
@@ -63,26 +60,14 @@ func runExec(ctx context.Context, args map[string]any, sc *Scope) (Result, error
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	bin, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	rl := sc.Cfg.Tools.Exec.RLimit
-	helperArgs := []string{"exec-helper",
-		"--as-mb", strconv.Itoa(rl.MemMB),
-		"--cpu-sec", strconv.Itoa(rl.CPUSeconds),
-		"--nproc", strconv.Itoa(rl.MaxProcs),
-		"--"}
-	helperArgs = append(helperArgs, argv...)
-
-	cmd := exec.CommandContext(ctx2, bin, helperArgs...)
+	cmd := exec.CommandContext(ctx2, argv[0], argv[1:]...)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err := cmd.Run()
 	exitCode := 0
 	if err != nil {
 		var ee *exec.ExitError
@@ -152,51 +137,4 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n...[truncated]"
-}
-
-func ExecHelper(args []string) error {
-	var asMB, cpuSec, nproc int
-	i := 0
-parse:
-	for i < len(args) {
-		switch args[i] {
-		case "--as-mb":
-			i++
-			asMB, _ = strconv.Atoi(args[i])
-		case "--cpu-sec":
-			i++
-			cpuSec, _ = strconv.Atoi(args[i])
-		case "--nproc":
-			i++
-			nproc, _ = strconv.Atoi(args[i])
-		case "--":
-			i++
-			break parse
-		}
-		i++
-	}
-	argv := args[i:]
-	if len(argv) == 0 {
-		return errors.New("no command")
-	}
-
-	if asMB > 0 {
-		lim := uint64(asMB) * 1024 * 1024
-		unix.Setrlimit(unix.RLIMIT_AS, &unix.Rlimit{Cur: lim, Max: lim})
-	}
-	if cpuSec > 0 {
-		lim := uint64(cpuSec)
-		unix.Setrlimit(unix.RLIMIT_CPU, &unix.Rlimit{Cur: lim, Max: lim})
-	}
-	if nproc > 0 {
-		lim := uint64(nproc)
-		unix.Setrlimit(unix.RLIMIT_NPROC, &unix.Rlimit{Cur: lim, Max: lim})
-	}
-	unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{Cur: 0, Max: 0})
-
-	binPath, err := exec.LookPath(argv[0])
-	if err != nil {
-		return err
-	}
-	return unix.Exec(binPath, argv, os.Environ())
 }

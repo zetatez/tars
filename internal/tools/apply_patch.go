@@ -20,7 +20,7 @@ func applyPatchTool() *Tool {
 			},
 			"required": []string{"patch"},
 		},
-		PolicyAction: "write_file",
+		PolicyAction: "apply_patch",
 		ParallelSafe: false,
 		Execute:      runApplyPatch,
 	}

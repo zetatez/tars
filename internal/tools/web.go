@@ -31,7 +31,7 @@ func webfetchTool() *Tool {
 		ResourceKey:  "url",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
-			if !sc.Cfg.Network.WebFetch.Enabled {
+			if !sc.Cfg.Network.WebFetch {
 				return nil, errors.New("webfetch disabled")
 			}
 			u, _ := args["url"].(string)
@@ -40,7 +40,7 @@ func webfetchTool() *Tool {
 			}
 			timeout := sc.Cfg.Network.ConnectTimeout.Duration
 			if timeout <= 0 {
-				timeout = 10 * time.Second
+				timeout = 16 * time.Second
 			}
 			ctx2, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
@@ -80,7 +80,7 @@ func websearchTool() *Tool {
 		ResourceKey:  "query",
 		ParallelSafe: true,
 		Execute: func(ctx context.Context, args map[string]any, sc *Scope) (Result, error) {
-			if !sc.Cfg.Network.WebSearch.Enabled {
+			if !sc.Cfg.Network.WebSearch {
 				return nil, errors.New("websearch disabled")
 			}
 			q, _ := args["query"].(string)
@@ -89,7 +89,7 @@ func websearchTool() *Tool {
 			}
 			timeout := sc.Cfg.Network.ConnectTimeout.Duration
 			if timeout <= 0 {
-				timeout = 10 * time.Second
+				timeout = 16 * time.Second
 			}
 			ctx2, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()

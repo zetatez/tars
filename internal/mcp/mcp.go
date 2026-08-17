@@ -171,7 +171,7 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any,
 	}
 	scope := &tools.Scope{Cwd: cwd, KeyID: keyID, DB: s.db, Cfg: s.cfg}
 
-	results := s.tools.ExecuteBatch(ctx, []tools.Call{{ID: "1", Name: name, Args: args}}, scope, 1)
+	results := s.tools.ExecuteBatch(ctx, []tools.Call{{ID: "1", Name: name, Args: args}}, scope)
 	cr := results[0]
 	text, _ := json.Marshal(cr.Result)
 	return &mcpCallResult{

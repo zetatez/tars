@@ -25,14 +25,6 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "exec-helper" {
-		if err := tools.ExecHelper(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	configPath := flag.String("config", "/opt/tars/config.yaml", "config file path")
 	flag.Parse()
 
@@ -57,14 +49,9 @@ func main() {
 	}
 	defer st.Close()
 
-	adminPlain, err := auth.EnsureAdmin(st.DB(), os.Getenv("TARS_ADMIN_KEY"))
-	if err != nil {
+	if err := auth.EnsureAdmin(st.DB(), cfg.AdminKey); err != nil {
 		logger.Error("ensure admin", "err", err)
 		os.Exit(1)
-	}
-	if adminPlain != "" {
-		fmt.Fprintf(os.Stderr, "generated admin key (save it, shown once): %s\n", adminPlain)
-		logger.Warn("admin key generated, shown once")
 	}
 
 	llmPool := llm.NewPool(cfg.LLM)
@@ -93,7 +80,7 @@ func main() {
 	defer stop()
 
 	go st.CheckpointLoop(ctx, cfg.Storage.WALCheckpointInterval.Duration)
-	go st.CleanupLoop(ctx, cfg.StorageQ, cfg.Session.RetentionDays, logger)
+	go st.CleanupLoop(ctx, cfg.Storage.Quota, cfg.Session.RetentionDays, logger)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -109,7 +96,7 @@ func main() {
 		logger.Info("shutting down")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.GracefulTimeout.Duration)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Duration)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown", "err", err)
