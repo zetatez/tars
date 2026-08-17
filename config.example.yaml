@@ -1,0 +1,143 @@
+# tars config — default: /opt/tars/config.yaml (--config to override)
+# Omitted fields use built-in defaults.
+
+listen: ":8899"
+data_dir: /opt/tars/data
+default_cwd: /opt/tars/work
+prompt_mode: interrupt # interrupt | queue
+
+# 会话存储：每个 session 一个独立文件夹 data_dir/sessions/<id>/，
+# 内含 session.log（完整输入输出，自动轮转）与 memory.json/memory.md（会话级记忆快照，用于快速恢复）。
+session:
+  retention_days: 30 # 空闲会话保留天数（0=不清理）
+  log_max_size_mb: 10 # 每个会话日志达到该大小即轮转
+  log_max_backups: 3 # 保留的日志备份数
+
+agent:
+  system_prompt: |-
+    You are tars, a general-purpose AI agent that can analyze and handle arbitrary problems.
+    Follow the permission allowlist; do not perform irreversible operations without approval.
+    Persist key conclusions with memory_store for reuse in later sessions.
+  temperature: 0.0
+  max_tokens: 4096
+  max_tool_steps: 25
+  model: ""
+
+llm:
+  lb_strategy: priority # priority | random | round_robin
+  stream_idle_timeout: 60s
+  retry:
+    max_attempts: 3
+    backoff: 2s
+    max_backoff: 30s
+  providers:
+    - name: ark
+      type: openai # openai | anthropic
+      base_url: "https://ark.cn-beijing.volces.com/api/plan/v3"
+      api_key: "${ARK_AGENT_PLAN_API_KEY_ZIWEI}"
+      model: "deepseek-v4-flash"
+      context_window: 128000
+      priority: 1
+    - name: deepseek
+      type: openai # openai | anthropic
+      base_url: "https://api.deepseek.com/v1"
+      api_key: "${DEEPSEEK_API_KEY}"
+      model: "deepseek-v4-flash"
+      context_window: 128000
+      priority: 1
+    - name: ark
+      type: openai
+      base_url: https://ark.cn-beijing.volces.com/api/plan/v3
+      api_key: "${ARK_AGENT_PLAN_API_KEY}"
+      model: "deepseek-v4-flash"
+      context_window: 128000
+      priority: 1
+    - name: ark
+      type: openai
+      base_url: https://ark.cn-beijing.volces.com/api/coding/v3
+      api_key: "${ARK_CODING_PLAN_API_KEY}"
+      model: "deepseek-v4-flash"
+      context_window: 128000
+      priority: 1
+
+system_protect:
+  system_paths:
+    - /etc
+    - /usr
+    - /boot
+    - /bin
+    - /sbin
+    - /var
+    - /opt
+    - /proc
+    - /sys
+    - /dev
+  privileged_commands:
+    - apt
+    - apt-get
+    - yum
+    - dnf
+    - pacman
+    - zypper
+    - systemctl
+    - service
+    - chmod
+    - chown
+    - useradd
+    - usermod
+    - passwd
+    - mount
+    - umount
+  destructive_commands:
+    - mkfs
+    - fdisk
+    - parted
+    - wipefs
+    - shred
+    - grub-install
+    - "rm -rf /"
+    - "dd of=/dev/"
+  admin_auto: true # admin runs L2/L3 without approval
+  backup:
+    enabled: true # backup before system writes
+    keep: 5
+
+quota:
+  max_active_sessions: 200 # global
+  max_concurrent_turns_per_key: 32 # per-key
+
+permissions:
+  rules:
+    - action: exec
+      resource: "*"
+      effect: allow
+    - action: read_file
+      resource: "*"
+      effect: allow
+    - action: write_file
+      resource: "*"
+      effect: allow
+    - action: edit_file
+      resource: "*"
+      effect: allow
+    - action: apply_patch
+      resource: "*"
+      effect: allow
+    - action: grep
+      resource: "*"
+      effect: allow
+    - action: glob
+      resource: "*"
+      effect: allow
+    - action: ls
+      resource: "*"
+      effect: allow
+    - action: webfetch
+      resource: "*"
+      effect: allow
+    - action: websearch
+      resource: "*"
+      effect: allow
+  approval:
+    enabled: false # ask approval for non-admin L2/L3
+    timeout: 300s

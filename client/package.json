@@ -1,0 +1,22 @@
+{
+  "name": "tars-cli",
+  "version": "0.1.0",
+  "description": "tars AI agent CLI client",
+  "type": "module",
+  "bin": {
+    "tars-cli": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.18",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "ink": "^7.1.1",
+    "react": "^19.2.8"
+  }
+}
