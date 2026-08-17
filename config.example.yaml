@@ -3,7 +3,7 @@
 listen: ":8899"
 data_dir: /opt/tars/data
 default_cwd: /home/agent/work
-prompt_mode: interrupt                    # interrupt | queue
+prompt_mode: interrupt # interrupt | queue
 
 agent:
   system_prompt: |-
@@ -16,14 +16,14 @@ agent:
   model: ""
 
 llm:
-  strategy: priority                      # priority | random | round_robin
+  strategy: priority # priority | random | round_robin
   idle_timeout: 60s
   retry:
     max_attempts: 3
     backoff: 2s
   providers:
     - name: deepseek
-      type: openai                        # openai | anthropic
+      type: openai # openai | anthropic
       base_url: "https://api.deepseek.com/v1"
       api_key: "${LLM_API_KEY}"
       model: "deepseek-chat"
