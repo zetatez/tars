@@ -108,8 +108,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// Version 可通过 ldflags -X 注入。
+var Version = "0.1.0"
+
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"version": "0.1.0", "name": "tars"})
+	writeJSON(w, http.StatusOK, map[string]string{"version": Version, "name": "tars"})
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
