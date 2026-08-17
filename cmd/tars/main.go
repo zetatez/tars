@@ -16,6 +16,7 @@ import (
 	"tars/internal/config"
 	"tars/internal/llm"
 	"tars/internal/log"
+	"tars/internal/perm"
 	"tars/internal/session"
 	"tars/internal/store"
 	"tars/internal/tools"
@@ -66,9 +67,10 @@ func main() {
 
 	llmClient := llm.New(cfg.LLM)
 	reg := tools.Default(cfg)
-	ag := agent.New(cfg, st.DB(), llmClient, reg, logger)
+	permEval := perm.New(cfg)
+	ag := agent.New(cfg, st.DB(), llmClient, reg, permEval, logger)
 
-	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd, ag)
+	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd, ag, cfg.DataDir, cfg.Session)
 	srv := api.New(cfg, st.DB(), logger, mgr)
 
 	httpServer := &http.Server{

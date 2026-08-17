@@ -5,13 +5,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"tars/internal/agent"
+	"tars/internal/config"
+	"tars/internal/log"
 )
 
 type Event struct {
@@ -37,8 +41,12 @@ type Actor struct {
 	Cwd    string
 	Model  string
 	Status string
+	Role   string
 
 	agent *agent.Agent
+
+	sessLog       *slog.Logger
+	sessLogCloser io.Closer
 
 	ch   chan PromptReq
 	stop chan struct{}
@@ -62,19 +70,23 @@ type Manager struct {
 	log        *slog.Logger
 	defaultCwd string
 	agent      *agent.Agent
+	dataDir    string
+	sessCfg    config.Session
 }
 
-func NewManager(db *sql.DB, log *slog.Logger, defaultCwd string, ag *agent.Agent) *Manager {
+func NewManager(db *sql.DB, log *slog.Logger, defaultCwd string, ag *agent.Agent, dataDir string, sessCfg config.Session) *Manager {
 	return &Manager{
 		sessions:   make(map[string]*Actor),
 		db:         db,
 		log:        log,
 		defaultCwd: defaultCwd,
 		agent:      ag,
+		dataDir:    dataDir,
+		sessCfg:    sessCfg,
 	}
 }
 
-func (m *Manager) Create(keyID, cwd, model string) (*Actor, error) {
+func (m *Manager) Create(keyID, cwd, model, role string) (*Actor, error) {
 	if cwd == "" {
 		cwd = m.defaultCwd
 	}
@@ -93,6 +105,7 @@ func (m *Manager) Create(keyID, cwd, model string) (*Actor, error) {
 		Cwd:       cwd,
 		Model:     model,
 		Status:    "idle",
+		Role:      role,
 		agent:     m.agent,
 		ch:        make(chan PromptReq, 8),
 		stop:      make(chan struct{}),
@@ -106,6 +119,14 @@ func (m *Manager) Create(keyID, cwd, model string) (*Actor, error) {
 		return nil, err
 	}
 	a.nextSeq = maxSeq + 1
+
+	if w, err := log.NewRotatingWriter(
+		filepath.Join(m.dataDir, "logs", "sessions"), id+".log",
+		m.sessCfg.LogMaxSizeMB, 0, m.sessCfg.LogMaxBackups,
+	); err == nil {
+		a.sessLog = slog.New(slog.NewJSONHandler(w, nil))
+		a.sessLogCloser = w
+	}
 
 	m.mu.Lock()
 	m.sessions[id] = a
@@ -141,11 +162,10 @@ func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
 	delete(m.sessions, id)
 	m.mu.Unlock()
-	_, err := m.db.Exec(`DELETE FROM session WHERE id = ?`, id)
-	if err != nil {
-		return err
+	if a.sessLogCloser != nil {
+		a.sessLogCloser.Close()
 	}
-	_, err = m.db.Exec(`DELETE FROM message WHERE session_id = ?`, id)
+	_, err := m.db.Exec(`DELETE FROM session WHERE id = ?`, id)
 	return err
 }
 
@@ -207,6 +227,9 @@ func (a *Actor) runTurn(req PromptReq) {
 
 	a.setStatus("running")
 	a.broadcast(Event{Type: "turn.started"})
+	if a.sessLog != nil {
+		a.sessLog.Info("turn.started", "text", req.Text)
+	}
 
 	if a.agent != nil {
 		a.agent.RunTurn(ctx, a, agent.PromptReq{Text: req.Text, Files: req.Files})
@@ -214,6 +237,9 @@ func (a *Actor) runTurn(req PromptReq) {
 		a.appendMessage("assistant", map[string]any{"v": 1, "text": "agent 未配置"})
 	}
 
+	if a.sessLog != nil {
+		a.sessLog.Info("turn.finished")
+	}
 	a.setStatus("idle")
 }
 
@@ -221,6 +247,7 @@ func (a *Actor) SessionID() string    { return a.ID }
 func (a *Actor) SessionKeyID() string { return a.KeyID }
 func (a *Actor) SessionCwd() string   { return a.Cwd }
 func (a *Actor) SessionModel() string { return a.Model }
+func (a *Actor) SessionRole() string  { return a.Role }
 func (a *Actor) Append(role string, content any) {
 	a.appendMessage(role, content)
 }

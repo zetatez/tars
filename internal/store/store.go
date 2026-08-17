@@ -114,6 +114,22 @@ func (s *Store) migrate() error {
 			action TEXT, resource TEXT, status TEXT,
 			created INTEGER NOT NULL, resolved INTEGER
 		)`,
+		`CREATE TABLE IF NOT EXISTS fs_backup (
+			id TEXT PRIMARY KEY, session_id TEXT, path TEXT,
+			backup_path TEXT, before_hash TEXT, created INTEGER NOT NULL
+		)`,
+		`CREATE TRIGGER IF NOT EXISTS session_del_message AFTER DELETE ON session BEGIN
+			DELETE FROM message WHERE session_id = old.id;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS session_del_memory AFTER DELETE ON session BEGIN
+			DELETE FROM memory WHERE session_id = old.id AND scope = 'session';
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS session_del_fsbackup AFTER DELETE ON session BEGIN
+			DELETE FROM fs_backup WHERE session_id = old.id;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS session_del_approval AFTER DELETE ON session BEGIN
+			DELETE FROM approval WHERE session_id = old.id;
+		END`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {

@@ -19,11 +19,12 @@ type RotatingWriter struct {
 	name       string
 	maxSize    int64
 	retainDays int
+	maxBackups int
 	f          *os.File
 	size       int64
 }
 
-func NewRotatingWriter(dir, name string, maxSizeMB, retainDays int) (*RotatingWriter, error) {
+func NewRotatingWriter(dir, name string, maxSizeMB, retainDays, maxBackups int) (*RotatingWriter, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -32,6 +33,7 @@ func NewRotatingWriter(dir, name string, maxSizeMB, retainDays int) (*RotatingWr
 		name:       name,
 		maxSize:    int64(maxSizeMB) * 1024 * 1024,
 		retainDays: retainDays,
+		maxBackups: maxBackups,
 	}
 	if err := w.open(); err != nil {
 		return nil, err
@@ -82,8 +84,22 @@ func (w *RotatingWriter) rotate() error {
 	if err := os.Rename(base, base+".1"); err != nil {
 		return err
 	}
+	w.pruneBackups()
 	w.prune()
 	return w.open()
+}
+
+func (w *RotatingWriter) pruneBackups() {
+	if w.maxBackups <= 0 {
+		return
+	}
+	idx := w.backupIndices()
+	if len(idx) <= w.maxBackups {
+		return
+	}
+	for _, n := range idx[:len(idx)-w.maxBackups] {
+		os.Remove(filepath.Join(w.dir, w.name+"."+strconv.Itoa(n)))
+	}
 }
 
 func (w *RotatingWriter) backupIndices() []int {
@@ -132,7 +148,7 @@ func (w *RotatingWriter) Close() error {
 
 func New(cfg config.Log) (*slog.Logger, io.Closer, error) {
 	level := parseLevel(cfg.Level)
-	w, err := NewRotatingWriter(cfg.Dir, "tars.log", cfg.MaxSizeMB, cfg.RetentionDays)
+	w, err := NewRotatingWriter(cfg.Dir, "tars.log", cfg.MaxSizeMB, cfg.RetentionDays, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("init rotating writer: %w", err)
 	}

@@ -15,6 +15,7 @@ import (
 
 	"tars/internal/auth"
 	"tars/internal/config"
+	"tars/internal/perm"
 	"tars/internal/session"
 )
 
@@ -46,8 +47,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/session/{id}", s.auth(s.handleDeleteSession))
 	mux.HandleFunc("POST /api/v1/session/{id}/prompt", s.auth(s.handlePrompt))
 	mux.HandleFunc("POST /api/v1/session/{id}/interrupt", s.auth(s.handleInterrupt))
+	mux.HandleFunc("POST /api/v1/session/{id}/rollback", s.auth(s.handleRollback))
 	mux.HandleFunc("GET /api/v1/session/{id}/messages", s.auth(s.handleMessages))
 	mux.HandleFunc("GET /api/v1/session/{id}/event", s.auth(s.handleEvent))
+
+	mux.HandleFunc("DELETE /api/v1/keys/{id}", s.authAdmin(s.handleDeleteKey))
+	mux.HandleFunc("GET /api/v1/keys/{id}/config", s.auth(s.handleGetKeyConfig))
+	mux.HandleFunc("PUT /api/v1/keys/{id}/config", s.auth(s.handlePutKeyConfig))
 	return mux
 }
 
@@ -108,6 +114,89 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"key_id": keyID, "key": plain})
 }
 
+func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.db.Exec(`UPDATE api_keys SET active = 0 WHERE key_id = ?`, id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("key revoked", "key_id", id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) checkKeyAccess(w http.ResponseWriter, r *http.Request, id string) bool {
+	ki := keyInfo(r)
+	if ki.Role != auth.RoleAdmin && ki.KeyID != id {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleGetKeyConfig(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkKeyAccess(w, r, id) {
+		return
+	}
+	var config string
+	err := s.db.QueryRow(`SELECT config FROM key_config WHERE key_id = ?`, id).Scan(&config)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(config))
+}
+
+func (s *Server) handlePutKeyConfig(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.checkKeyAccess(w, r, id) {
+		return
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
+		return
+	}
+	existing := map[string]any{}
+	var existingRaw string
+	if err := s.db.QueryRow(`SELECT config FROM key_config WHERE key_id = ?`, id).Scan(&existingRaw); err == nil {
+		_ = json.Unmarshal([]byte(existingRaw), &existing)
+	}
+	for k, v := range body {
+		existing[k] = v
+	}
+	merged, _ := json.Marshal(existing)
+	_, err := s.db.Exec(
+		`INSERT INTO key_config (key_id, config, time_updated) VALUES (?, ?, ?)
+		 ON CONFLICT(key_id) DO UPDATE SET config = excluded.config, time_updated = excluded.time_updated`,
+		id, string(merged), time.Now().Unix(),
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("key config updated", "key_id", id)
+	writeJSON(w, http.StatusOK, json.RawMessage(merged))
+}
+
+func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.mgr.Get(r.PathValue("id"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	ki := keyInfo(r)
+	if a.KeyID != ki.KeyID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	if err := perm.Rollback(s.db, a.ID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rolled_back": true})
+}
+
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	ki := keyInfo(r)
 	var body struct {
@@ -115,7 +204,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	a, err := s.mgr.Create(ki.KeyID, body.Cwd, body.Model)
+	a, err := s.mgr.Create(ki.KeyID, body.Cwd, body.Model, ki.Role)
 	if err != nil {
 		s.log.Error("create session", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create session failed"})
