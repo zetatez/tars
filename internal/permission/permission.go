@@ -111,6 +111,36 @@ func (e *Evaluator) evalRead(policyAction, resourceKey string, args map[string]a
 	return Decision{Effect: effect, Level: LevelRead}
 }
 
+func (e *Evaluator) EvaluatePatch(patch, role, cwd string) Decision {
+	worst := Decision{Effect: EffectAllow, Level: LevelRead}
+	lines := strings.Split(patch, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "*** Update File: ") {
+			continue
+		}
+		path := ResolvePath(cwd, strings.TrimSpace(strings.TrimPrefix(trimmed, "*** Update File: ")))
+		dec := e.evalWrite("write_file", map[string]any{"path": path}, role, cwd)
+		if severity(dec) > severity(worst) {
+			worst = dec
+		}
+	}
+	return worst
+}
+
+func severity(d Decision) int {
+	sev := d.Level * 10
+	switch d.Effect {
+	case EffectDeny:
+		sev += 3
+	case EffectAsk:
+		sev += 2
+	case EffectAllow:
+		sev += 1
+	}
+	return sev
+}
+
 func (e *Evaluator) guard(effect string, level int, role, resource string) Decision {
 	if effect != EffectAllow {
 		return Decision{Effect: EffectDeny, Level: level, Reason: "not in allowlist: " + resource}

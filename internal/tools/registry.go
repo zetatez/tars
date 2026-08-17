@@ -16,5 +16,8 @@ func Default(cfg *config.Config) *Registry {
 	r.Register(memoryStoreTool())
 	r.Register(memoryQueryTool())
 	r.Register(taskDoneTool())
+	r.Register(taskTool())
+	r.Register(applyPatchTool())
+	r.Register(contextTool())
 	return r
 }

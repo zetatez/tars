@@ -9,12 +9,18 @@ import (
 	"tars/internal/llm"
 )
 
+type DelegateFunc func(ctx context.Context, prompt, cwd, model, keyID, role string) (string, error)
+
 type Scope struct {
-	Cwd       string
-	KeyID     string
-	SessionID string
-	DB        *sql.DB
-	Cfg       *config.Config
+	Cwd           string
+	KeyID         string
+	Role          string
+	SessionID     string
+	DB            *sql.DB
+	Cfg           *config.Config
+	Delegate      DelegateFunc
+	CurrentTokens int
+	ContextWindow int
 }
 
 type Result = map[string]any

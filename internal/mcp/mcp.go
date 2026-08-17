@@ -181,11 +181,26 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any,
 }
 
 func (s *Server) evaluateTool(name string, args map[string]any, role, cwd string) permission.Decision {
+	if internalTool(name) {
+		return permission.Decision{Effect: permission.EffectAllow, Level: permission.LevelRead}
+	}
+	if name == "apply_patch" {
+		patch, _ := args["patch"].(string)
+		return s.perm.EvaluatePatch(patch, role, cwd)
+	}
 	t, ok := s.tools.Get(name)
 	if !ok {
 		return permission.Decision{Effect: permission.EffectDeny, Level: permission.LevelWorkspace, Reason: "unknown tool: " + name}
 	}
 	return s.perm.EvaluateToolCall(name, t.PolicyAction, t.ResourceKey, args, role, cwd)
+}
+
+func internalTool(name string) bool {
+	switch name {
+	case "task", "task_done", "get_context_remaining", "memory_store", "memory_query":
+		return true
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
