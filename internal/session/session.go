@@ -169,6 +169,44 @@ func (m *Manager) Delete(id string) error {
 	return err
 }
 
+func (m *Manager) RunSync(keyID, cwd, model, role, text string) (string, error) {
+	a, err := m.Create(keyID, cwd, model, role)
+	if err != nil {
+		return "", err
+	}
+	defer m.Delete(a.ID)
+
+	sub := a.Subscribe()
+	defer a.Unsubscribe(sub)
+
+	if err := a.Prompt(PromptReq{Text: text}); err != nil {
+		return "", err
+	}
+
+	for ev := range sub.Ch {
+		if ev.Type == "turn.done" || ev.Type == "turn.failed" {
+			break
+		}
+	}
+
+	var content string
+	if err := m.db.QueryRow(
+		`SELECT content FROM message WHERE session_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1`,
+		a.ID,
+	).Scan(&content); err != nil {
+		return "", err
+	}
+	var c struct {
+		Text  string `json:"text"`
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal([]byte(content), &c)
+	if c.Error != "" {
+		return "", errors.New(c.Error)
+	}
+	return c.Text, nil
+}
+
 func (a *Actor) loop() {
 	for {
 		select {

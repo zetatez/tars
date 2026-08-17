@@ -16,6 +16,7 @@ import (
 	"tars/internal/config"
 	"tars/internal/llm"
 	"tars/internal/log"
+	"tars/internal/mcp"
 	"tars/internal/perm"
 	"tars/internal/quota"
 	"tars/internal/session"
@@ -74,10 +75,15 @@ func main() {
 	qc := quota.New(cfg, st.DB())
 	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd, ag, cfg.DataDir, cfg.Session)
 	srv := api.New(cfg, st.DB(), logger, mgr, qc)
+	mcpSrv := mcp.New(cfg, st.DB(), logger, reg, permEval, mgr)
+
+	root := http.NewServeMux()
+	root.Handle("/mcp", mcpSrv.Handler())
+	root.Handle("/", srv.Handler())
 
 	httpServer := &http.Server{
 		Addr:    cfg.Listen,
-		Handler: srv.Handler(),
+		Handler: root,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
