@@ -97,7 +97,8 @@ func (w *RotatingWriter) pruneBackups() {
 	if len(idx) <= w.maxBackups {
 		return
 	}
-	for _, n := range idx[:len(idx)-w.maxBackups] {
+	// 备份号越小越新（.1 为最新），保留前 maxBackups 个，删除更旧的
+	for _, n := range idx[w.maxBackups:] {
 		os.Remove(filepath.Join(w.dir, w.name+"."+strconv.Itoa(n)))
 	}
 }

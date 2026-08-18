@@ -145,13 +145,24 @@ internal/audit/         审计 + 指标（expvar/pprof，§13.7 只读监控）
     tars.lock                 # flock 单实例锁
     logs/
       tars.log[.1..]          # 系统运行日志（按大小轮转 + 按天保留）
-      sessions/{id}.log       # 每 session 独立运行日志
+    sessions/{id}/            # 每 session 独立文件夹（含日志与记忆快照）
+      session.log[.1..]      # 完整输入输出日志（按大小轮转 + 保留数）
+      memory.json            # 会话级记忆快照（结构化，用于快速恢复）
+      memory.md              # 会话级记忆（人类可读）
     backups/tars-backup.db    # 定时快照
     tmp/                      # 大工具结果落盘（>64KB，随 session 清理）
 ```
 
 路径约定：**配置**默认 `/opt/tars/config.yaml`（可 `--config` 指定）；**数据/运行**固定
-`/opt/tars/data`，含 db/日志/备份/临时文件。
+`/opt/tars/data`，含 db/日志/会话文件夹/备份/临时文件。
+
+**会话文件夹**：每个 session 对应 `data/sessions/<id>/`：
+- `session.log` 记录完整输入输出（turn.started、每条消息含工具调用参数/结果、审批与 turn 事件），
+  超过 `session.log_max_size_mb` 自动轮转，保留 `session.log_max_backups` 份备份。
+- `memory.json`/`memory.md` 为该 key 在 global/workspace 及本 session 作用域的记忆快照，
+  每轮结束写入；服务重启后 `GET /session/{id}` 等接口会从 DB 恢复（resume）该会话，
+  记忆快照随之刷新，用于会话快速恢复与离线检查。
+- 会话删除时整个文件夹一并清理；`CleanupOrphanedFolders` 定期回收 retention 过期后残留的孤儿文件夹。
 
 依赖面（刻意最小）：`modernc.org/sqlite`、`gopkg.in/yaml.v3`、`google/uuid`。
 

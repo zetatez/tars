@@ -2,8 +2,8 @@ import type { Message, Session } from "./types.js";
 
 export class API {
   constructor(
-    private baseURL: string,
-    private key: string,
+    readonly baseURL: string,
+    readonly key: string,
   ) {}
 
   private async req<T>(
@@ -41,7 +41,7 @@ export class API {
   health(): Promise<{ status: string }> {
     return this.req("GET", "/healthz");
   }
-  version(): Promise<{ name: string; version: string }> {
+  version(): Promise<{ name: string; version: string; hostname?: string; ip?: string }> {
     return this.req("GET", "/version");
   }
 
@@ -58,11 +58,14 @@ export class API {
     return this.req("DELETE", `/api/v1/session/${id}`);
   }
 
-  prompt(id: string, text: string, idempotencyKey?: string): Promise<{ turnId: string }> {
-    return this.req("POST", `/api/v1/session/${id}/prompt`, { text }, idempotencyKey);
+  prompt(id: string, text: string, idempotencyKey?: string, mode?: "build" | "plan"): Promise<{ turnId: string }> {
+    return this.req("POST", `/api/v1/session/${id}/prompt`, { text, mode }, idempotencyKey);
   }
   interrupt(id: string): Promise<void> {
     return this.req("POST", `/api/v1/session/${id}/interrupt`);
+  }
+  approval(id: string, requestId: string, decision: "approved" | "denied"): Promise<{ resolved: string }> {
+    return this.req("POST", `/api/v1/session/${id}/approval`, { requestId, decision });
   }
   rollback(id: string): Promise<{ rolled_back: boolean }> {
     return this.req("POST", `/api/v1/session/${id}/rollback`);

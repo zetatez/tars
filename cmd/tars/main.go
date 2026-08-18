@@ -64,7 +64,7 @@ func main() {
 	ag.SetDelegate(func(ctx context.Context, prompt, cwd, model, keyID, role string, depth int) (string, error) {
 		return mgr.RunSync(keyID, cwd, model, role, prompt, depth)
 	})
-	srv := api.New(cfg, st.DB(), logger, mgr, qc)
+	srv := api.New(cfg, st.DB(), logger, mgr, qc, llmPool)
 	mcpSrv := mcp.New(cfg, st.DB(), logger, reg, permEval, mgr)
 
 	root := http.NewServeMux()
@@ -81,6 +81,7 @@ func main() {
 
 	go st.CheckpointLoop(ctx, cfg.Storage.WALCheckpointInterval.Duration)
 	go st.CleanupLoop(ctx, cfg.Storage.Quota, cfg.Session.RetentionDays, logger)
+	go mgr.CleanupOrphanedFolders(ctx, cfg.Storage.Quota.ScanInterval.Duration)
 
 	errCh := make(chan error, 1)
 	go func() {

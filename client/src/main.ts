@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { createElement } from "react";
 import { API } from "./api.js";
+import { describeTool } from "./format.js";
 import { streamEvents } from "./sse.js";
-import type { EventData, Message } from "./types.js";
+import type { EventData, Message, ToolCall } from "./types.js";
 
 const BASE_URL = "http://localhost:8899";
 
@@ -27,28 +29,55 @@ function prettyJSON(v: unknown): string {
   return JSON.stringify(v, null, 2);
 }
 
+const C = {
+  gray: "\x1b[90m",
+  cyan: "\x1b[36m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  red: "\x1b[31m",
+  blue: "\x1b[34m",
+  reset: "\x1b[0m",
+};
+
+const KIND_COLOR: Record<string, string> = {
+  cmd: C.cyan,
+  info: C.gray,
+  out: C.gray,
+  err: C.red,
+  link: C.blue,
+};
+
+function renderTool(t: ToolCall): void {
+  const d = describeTool(t);
+  const head =
+    d.state === "ok"
+      ? `${C.green}ok${C.reset}`
+      : d.state === "error"
+        ? `${C.red}error${C.reset}`
+        : d.state === "rejected"
+          ? `${C.yellow}rejected${C.reset}`
+          : `${C.gray}${t.status ?? "?"}${C.reset}`;
+  console.log(`${C.gray}[${d.name}${C.reset} ${head}${C.gray}]${C.reset}`);
+  for (const l of d.lines) {
+    console.log(`${C.gray}  ${C.reset}${KIND_COLOR[l.kind] ?? C.gray}${l.text}${C.reset}`);
+  }
+}
+
 function renderMessage(m: Message): void {
   const c = m.content;
   const text = c.text ?? "";
   if (m.role === "user") {
-    console.log(`\x1b[36m[user]\x1b[0m ${text}`);
+    console.log(`${C.cyan}[user]${C.reset} ${text}`);
     return;
   }
   if (c.error) {
-    console.log(`\x1b[31m[assistant-error]\x1b[0m ${c.error}`);
+    console.log(`${C.red}[assistant-error]${C.reset} ${c.error}`);
     return;
   }
   if (c.tools && c.tools.length > 0) {
-    for (const t of c.tools) {
-      const r = t.result as Record<string, unknown> | undefined;
-      const stdout = (r?.stdout as string) ?? "";
-      const status = t.status === "ok" ? "\x1b[32mok\x1b[0m" : `\x1b[33m${t.status}\x1b[0m`;
-      console.log(`\x1b[90m[${t.name} ${status}]\x1b[0m ${stdout.trim()}`);
-      if (r?.rejected) console.log(`\x1b[90m  rejected: ${(r.reason as string) ?? ""}\x1b[0m`);
-      if (r?.error) console.log(`\x1b[31m  ${r.error}\x1b[0m`);
-    }
+    for (const t of c.tools) renderTool(t);
   }
-  if (text) console.log(`\x1b[32m[assistant]\x1b[0m ${text}`);
+  if (text) console.log(`${C.green}[assistant]${C.reset} ${text}`);
 }
 
 async function cmdPrompt(api: API, args: string[]): Promise<void> {
@@ -67,7 +96,9 @@ async function cmdPrompt(api: API, args: string[]): Promise<void> {
   }
 
   const { turnId } = await api.prompt(id, text, ik);
-  console.log(`\x1b[90mturn: ${turnId}\x1b[0m`);
+  console.log(`${C.gray}turn: ${turnId}${C.reset}`);
+  console.log(`${C.cyan}[user]${C.reset} ${text}`);
+  const t0 = Date.now();
 
   await new Promise<void>((resolve) => {
     let done = false;
@@ -75,6 +106,7 @@ async function cmdPrompt(api: API, args: string[]): Promise<void> {
       if (done) return;
       done = true;
       stop();
+      console.log(`${C.gray}(done in ${((Date.now() - t0) / 1000).toFixed(1)}s)${C.reset}`);
       resolve();
     };
     const stop = streamEvents(
@@ -82,19 +114,23 @@ async function cmdPrompt(api: API, args: string[]): Promise<void> {
       apiKeyOf(api),
       (ev: EventData) => {
         switch (ev.type) {
-          case "message.created":
-            renderMessage(ev.data as Message);
+          case "message.created": {
+            const m = ev.data as Message;
+            // 用户消息已在发送时立即打印，跳过重复
+            if (m.role === "user") break;
+            renderMessage(m);
             break;
+          }
           case "approval.requested": {
             const a = ev.data as { id: string; action: string; resource: string };
-            console.log(`\x1b[33m[审批] ${a.action}: ${a.resource} (id=${a.id})\x1b[0m`);
+            console.log(`${C.yellow}[审批]${C.reset} ${a.action}: ${a.resource} (id=${a.id})  → approval approve/reject <sessionId> <approvalId>`);
             break;
           }
           case "turn.done":
           case "turn.failed":
             if (ev.type === "turn.failed") {
               const d = ev.data as { error?: string };
-              console.log(`\x1b[31m[turn failed]\x1b[0m ${d.error ?? ""}`);
+              console.log(`${C.red}[turn failed]${C.reset} ${d.error ?? ""}`);
             }
             finish();
             break;
@@ -226,17 +262,55 @@ function flag(args: string[], name: string): string | undefined {
 }
 
 function apiKeyOf(api: API): string {
-  return (api as unknown as { key: string }).key;
+  return api.key;
+}
+
+async function cmdTui(api: API, args: string[]): Promise<void> {
+  if (!process.stdout.isTTY) fail("TUI 需要交互式终端（tty）");
+  let sid = flag(args, "--session");
+  let initialMessages: Message[] | undefined;
+  let initialPrompt: string | undefined;
+  if (sid) {
+    initialMessages = await api.messages(sid, 0, 100);
+  } else if (args.includes("--continue")) {
+    const { sessions } = await api.listSessions();
+    const last = sessions[0];
+    if (last) {
+      sid = last.id;
+      initialMessages = await api.messages(sid, 0, 100);
+    }
+  }
+  const p = flag(args, "--prompt") ?? flag(args, "-p");
+  if (p && !sid) {
+    const s = await api.createSession();
+    sid = s.id;
+    initialMessages = [];
+    initialPrompt = p;
+  }
+  const { render } = await import("ink");
+  const { TuiApp } = await import("./tui.js");
+  render(
+    createElement(TuiApp, {
+      api,
+      sessionId: sid ?? undefined,
+      initialMessages,
+      initialPrompt,
+    }),
+    { exitOnCtrlC: false },
+  );
 }
 
 async function main(): Promise<void> {
   const { baseURL, key, rest } = parseGlobalArgs(process.argv.slice(2));
   if (!key) fail("missing API key (use --key <KEY> or TARS_API_KEY)");
-  const [cmd, ...args] = rest;
-  if (!cmd) fail("usage: tars-cli <command> ...  (try: health, session create, prompt <id> <text>)");
-
   const api = new API(baseURL, key);
+  const [cmd, ...args] = rest;
   try {
+    if (!cmd) {
+      // 无命令：默认进入交互式 TUI
+      await cmdTui(api, args);
+      return;
+    }
     switch (cmd) {
       case "health": {
         const h = await api.health();
@@ -244,7 +318,8 @@ async function main(): Promise<void> {
         break;
       }
       case "version": {
-        console.log(prettyJSON(await api.version()));
+        const v = await api.version();
+        console.log(prettyJSON({ ...v }));
         break;
       }
       case "session":
@@ -284,11 +359,19 @@ async function main(): Promise<void> {
         console.log(prettyJSON(await api.stats(id)));
         break;
       }
+      case "tui":
+      case "ui":
+        await cmdTui(api, args);
+        break;
       default:
         fail(`unknown command: ${cmd}`);
     }
   } catch (err) {
-    fail((err as Error).message);
+    const msg = (err as Error).message;
+    if (/fetch failed|ECONNREFUSED|connection refused/i.test(msg)) {
+      fail(`无法连接 tars 服务（${baseURL}），请先启动后端或检查 --base-url`);
+    }
+    fail(msg);
   }
 }
 

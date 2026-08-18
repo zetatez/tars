@@ -6,6 +6,13 @@ data_dir: /opt/tars/data
 default_cwd: /opt/tars/work
 prompt_mode: interrupt # interrupt | queue
 
+# 会话存储：每个 session 一个独立文件夹 data_dir/sessions/<id>/，
+# 内含 session.log（完整输入输出，自动轮转）与 memory.json/memory.md（会话级记忆快照，用于快速恢复）。
+session:
+  retention_days: 30   # 空闲会话保留天数（0=不清理）
+  log_max_size_mb: 10  # 每个会话日志达到该大小即轮转
+  log_max_backups: 3   # 保留的日志备份数
+
 # required: initial admin key, format <key_id>_<hex secret>
 admin_key: "00000000-0000-0000-0000-000000000000_0000000000000000000000000000000000000000000000000000000000000000"
 

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"runtime"
 	"strconv"
 	"time"
@@ -15,6 +17,7 @@ import (
 
 	"tars/internal/auth"
 	"tars/internal/config"
+	"tars/internal/llm"
 	"tars/internal/permission"
 	"tars/internal/quota"
 	"tars/internal/session"
@@ -30,10 +33,11 @@ type Server struct {
 	log   *slog.Logger
 	mgr   *session.Manager
 	quota *quota.Checker
+	llm   *llm.Pool
 }
 
-func New(cfg *config.Config, db *sql.DB, log *slog.Logger, mgr *session.Manager, q *quota.Checker) *Server {
-	return &Server{cfg: cfg, db: db, log: log, mgr: mgr, quota: q}
+func New(cfg *config.Config, db *sql.DB, log *slog.Logger, mgr *session.Manager, q *quota.Checker, llm *llm.Pool) *Server {
+	return &Server{cfg: cfg, db: db, log: log, mgr: mgr, quota: q, llm: llm}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -111,8 +115,31 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // Version 可通过 ldflags -X 注入。
 var Version = "0.1.0"
 
+func serverIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err == nil {
+		defer conn.Close()
+		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && addr.IP != nil {
+			return addr.IP.String()
+		}
+	}
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ip, ok := a.(*net.IPNet); ok && !ip.IP.IsLoopback() && ip.IP.To4() != nil {
+			return ip.IP.String()
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"version": Version, "name": "tars"})
+	hostname, _ := os.Hostname()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":  Version,
+		"name":     "tars",
+		"hostname": hostname,
+		"ip":       serverIP(),
+	})
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -423,7 +450,19 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	if !s.checkRead(w, r, a.KeyID) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": a.Model})
+	provider, model := s.resolveSessionModel(a.Model)
+	writeJSON(w, http.StatusOK, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": model, "provider": provider})
+}
+
+// resolveSessionModel 返回会话生效的 provider 名与 model（model 为空时用后端默认）
+func (s *Server) resolveSessionModel(model string) (string, string) {
+	if s.llm != nil {
+		return s.llm.Resolve(model)
+	}
+	if model == "" {
+		model = s.cfg.Agent.Model
+	}
+	return "", model
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
@@ -464,6 +503,7 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text  string   `json:"text"`
 		Files []string `json:"files"`
+		Mode  string   `json:"mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
@@ -473,9 +513,14 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text required"})
 		return
 	}
+	if body.Mode != "" && body.Mode != "build" && body.Mode != "plan" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be build or plan"})
+		return
+	}
 	req := session.PromptReq{
 		Text:           body.Text,
 		Files:          body.Files,
+		Mode:           body.Mode,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 	}
 	if err := a.Prompt(req); err != nil {
@@ -582,6 +627,20 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 			}}, seq)
 		}
 		rows.Close()
+	}
+
+	// 重放当前 pending 的审批，避免客户端在 approval.requested 广播前才建立订阅而错过
+	if rows2, err := s.db.Query(
+		`SELECT id, action, resource FROM approval WHERE session_id = ? AND status = 'pending' ORDER BY created`,
+		a.ID,
+	); err == nil {
+		for rows2.Next() {
+			var aid, action, resource string
+			if rows2.Scan(&aid, &action, &resource) == nil {
+				sse(w, fl, session.Event{Type: "approval.requested", Data: map[string]any{"id": aid, "action": action, "resource": resource}}, 0)
+			}
+		}
+		rows2.Close()
 	}
 
 	sub := a.Subscribe()

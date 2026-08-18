@@ -20,6 +20,7 @@ type Provider interface {
 
 type entry struct {
 	provider      Provider
+	model         string
 	priority      int
 	contextWindow int
 	healthy       bool
@@ -67,6 +68,7 @@ func NewPool(cfg config.LLM) *Pool {
 		}
 		p.entries = append(p.entries, &entry{
 			provider:      provider,
+			model:         pc.Model,
 			priority:      pc.Priority,
 			contextWindow: pc.ContextWindow,
 			healthy:       true,
@@ -80,6 +82,25 @@ func (p *Pool) ContextWindow() int {
 		return 128000
 	}
 	return p.entries[0].contextWindow
+}
+
+// Resolve 返回给定 model 对应的展示用 provider 名与生效 model（用于 TUI 展示）。
+// model 为空时回退到第一个 provider 的默认 model。
+func (p *Pool) Resolve(model string) (string, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.entries) == 0 {
+		return "", model
+	}
+	if model == "" {
+		return p.entries[0].provider.Name(), p.entries[0].model
+	}
+	for _, e := range p.entries {
+		if e.model == model {
+			return e.provider.Name(), model
+		}
+	}
+	return p.entries[0].provider.Name(), model
 }
 
 func (p *Pool) Chat(ctx context.Context, req ChatRequest) (*Result, error) {

@@ -4,6 +4,7 @@ export interface Session {
   cwd: string;
   status: string;
   model: string;
+  provider?: string;
 }
 
 export interface ToolCall {

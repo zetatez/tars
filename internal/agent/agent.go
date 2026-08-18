@@ -35,6 +35,7 @@ type Session interface {
 type PromptReq struct {
 	Text  string
 	Files []string
+	Mode  string // "build" | "plan"（plan=只读）
 }
 
 type Agent struct {
@@ -78,6 +79,11 @@ func (a *Agent) RunTurn(ctx context.Context, sess Session, req PromptReq) {
 
 	sysPrompt := a.systemPrompt() + a.memoryInjection(sess)
 	toolDefs := a.allowedTools()
+	planMode := req.Mode == "plan"
+	if planMode {
+		sysPrompt += "\n\n当前为 plan（只读规划）模式：不得修改任何文件、执行命令或写入记忆；只做分析并给出计划。"
+		toolDefs = filterReadOnlyTools(toolDefs)
+	}
 	scope := &tools.Scope{
 		Cwd:           sess.SessionCwd(),
 		KeyID:         sess.SessionKeyID(),
@@ -147,7 +153,7 @@ func (a *Agent) RunTurn(ctx context.Context, sess Session, req PromptReq) {
 			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, tc)
 		}
 
-		results := a.execTools(ctx, sess, calls, scope)
+		results := a.execTools(ctx, sess, calls, scope, planMode)
 
 		toolResults := make([]map[string]any, len(results))
 		toolMsgs := make([]llm.Message, 0, len(results))
@@ -310,12 +316,16 @@ func (a *Agent) memoryInjection(sess Session) string {
 	return sb.String()
 }
 
-func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call, scope *tools.Scope) []tools.CallResult {
+func (a *Agent) execTools(ctx context.Context, sess Session, calls []tools.Call, scope *tools.Scope, planMode bool) []tools.CallResult {
 	results := make([]tools.CallResult, len(calls))
 	var allowed []tools.Call
 	var allowedIdx []int
 
 	for i, call := range calls {
+		if planMode && !readOnlyTool(call.Name) {
+			results[i] = tools.CallResult{ID: call.ID, Name: call.Name, Args: call.Args, Status: "denied", Result: tools.Result{"denied": true, "reason": "plan mode is read-only"}}
+			continue
+		}
 		dec := a.evaluateTool(call, sess)
 		audit.Record(a.db, audit.Entry{
 			ClientKey: sess.SessionKeyID(),
@@ -414,6 +424,25 @@ func internalTool(name string) bool {
 		return true
 	}
 	return false
+}
+
+// plan（只读）模式下允许的工具
+func readOnlyTool(name string) bool {
+	switch name {
+	case "read_file", "grep", "glob", "ls", "webfetch", "websearch", "memory_query", "get_context_remaining", "task", "task_done":
+		return true
+	}
+	return false
+}
+
+func filterReadOnlyTools(defs []llm.ToolDef) []llm.ToolDef {
+	out := defs[:0]
+	for _, d := range defs {
+		if readOnlyTool(d.Function.Name) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func (a *Agent) backupForCall(sess Session, scope *tools.Scope, call tools.Call) {

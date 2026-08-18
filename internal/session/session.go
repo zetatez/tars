@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +31,7 @@ type Event struct {
 type PromptReq struct {
 	Text           string   `json:"text"`
 	Files          []string `json:"files"`
+	Mode           string   `json:"mode"` // "build" | "plan"
 	IdempotencyKey string   `json:"-"`
 }
 
@@ -48,6 +52,7 @@ type Actor struct {
 
 	agent *agent.Agent
 
+	dir           string // dataDir/sessions/<id>，会话专属文件夹
 	sessLog       *slog.Logger
 	sessLogCloser io.Closer
 
@@ -134,13 +139,21 @@ func (m *Manager) Create(keyID, cwd, model, role string, depth int, promptMode s
 	}
 	a.nextSeq = maxSeq + 1
 
+	// 每个 session 一个独立文件夹：日志（轮转）+ 会话级记忆
+	a.dir = m.sessionDir(id)
+	if err := os.MkdirAll(a.dir, 0o755); err != nil {
+		m.log.Warn("session dir", "err", err, "session_id", id)
+	}
 	if w, err := log.NewRotatingWriter(
-		filepath.Join(m.dataDir, "logs", "sessions"), id+".log",
+		a.dir, "session.log",
 		m.sessCfg.LogMaxSizeMB, 0, m.sessCfg.LogMaxBackups,
 	); err == nil {
 		a.sessLog = slog.New(slog.NewJSONHandler(w, nil))
 		a.sessLogCloser = w
+	} else {
+		m.log.Warn("session log", "err", err, "session_id", id)
 	}
+	a.persistMemory()
 
 	m.mu.Lock()
 	m.sessions[id] = a
@@ -150,11 +163,113 @@ func (m *Manager) Create(keyID, cwd, model, role string, depth int, promptMode s
 	return a, nil
 }
 
+func (m *Manager) sessionDir(id string) string {
+	return filepath.Join(m.dataDir, "sessions", id)
+}
+
+// CleanupOrphanedFolders 定期清理“会话已从 DB 删除但文件夹残留”的孤儿目录
+// （如 retention 过期删除的会话），保证 dataDir/sessions 与 DB 一致。
+func (m *Manager) CleanupOrphanedFolders(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			base := m.sessionDir("")
+			entries, err := os.ReadDir(base)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				id := e.Name()
+				m.mu.RLock()
+				_, inMem := m.sessions[id]
+				m.mu.RUnlock()
+				if inMem {
+					continue
+				}
+				var one int
+				if m.db != nil && m.db.QueryRow(`SELECT 1 FROM session WHERE id = ?`, id).Scan(&one) == nil {
+					continue
+				}
+				_ = os.RemoveAll(filepath.Join(base, id))
+				m.log.Info("removed orphaned session folder", "session_id", id)
+			}
+		}
+	}
+}
+
 func (m *Manager) Get(id string) (*Actor, bool) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	a, ok := m.sessions[id]
-	return a, ok
+	m.mu.RUnlock()
+	if ok {
+		return a, true
+	}
+	return m.resume(id)
+}
+
+// resume 在服务重启后从 DB 恢复会话到内存（会话可继续 prompt/订阅）。
+func (m *Manager) resume(id string) (*Actor, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if a, ok := m.sessions[id]; ok {
+		return a, true
+	}
+	if m.db == nil {
+		return nil, false
+	}
+	var keyID, cwd, model string
+	if err := m.db.QueryRow(`SELECT key_id, cwd, model FROM session WHERE id = ?`, id).Scan(&keyID, &cwd, &model); err != nil {
+		return nil, false
+	}
+	role := "user"
+	_ = m.db.QueryRow(`SELECT role FROM api_keys WHERE key_id = ?`, keyID).Scan(&role)
+
+	a := &Actor{
+		ID:         id,
+		KeyID:      keyID,
+		Cwd:        cwd,
+		Model:      model,
+		Status:     "idle", // 重启后无进行中 turn
+		Role:       role,
+		promptMode: m.promptMode,
+		agent:      m.agent,
+		ch:         make(chan PromptReq, 8),
+		stop:       make(chan struct{}),
+		subs:       make(map[int64]*Subscriber),
+		processed:  make(map[string]struct{}),
+		db:         m.db,
+		log:        m.log,
+	}
+	var maxSeq int64
+	if err := m.db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM message WHERE session_id = ?`, id).Scan(&maxSeq); err != nil {
+		return nil, false
+	}
+	a.nextSeq = maxSeq + 1
+
+	a.dir = m.sessionDir(id)
+	if err := os.MkdirAll(a.dir, 0o755); err == nil {
+		if w, err := log.NewRotatingWriter(a.dir, "session.log", m.sessCfg.LogMaxSizeMB, 0, m.sessCfg.LogMaxBackups); err == nil {
+			a.sessLog = slog.New(slog.NewJSONHandler(w, nil))
+			a.sessLogCloser = w
+		}
+	}
+	// 刷新 DB 中的 status（若上次异常退出遗留 running）
+	a.db.Exec(`UPDATE session SET status = 'idle' WHERE id = ?`, id)
+	a.persistMemory()
+
+	m.sessions[id] = a
+	go a.loop()
+	return a, true
 }
 
 func (m *Manager) List() []*Actor {
@@ -178,6 +293,10 @@ func (m *Manager) Delete(id string) error {
 	m.mu.Unlock()
 	if a.sessLogCloser != nil {
 		a.sessLogCloser.Close()
+	}
+	// 清理该 session 专属文件夹（日志 + 记忆）
+	if a.dir != "" {
+		_ = os.RemoveAll(a.dir)
 	}
 	_, err := m.db.Exec(`DELETE FROM session WHERE id = ?`, id)
 	return err
@@ -291,11 +410,11 @@ func (a *Actor) runTurn(req PromptReq) {
 	a.setStatus("running")
 	a.broadcast(Event{Type: "turn.started"})
 	if a.sessLog != nil {
-		a.sessLog.Info("turn.started", "text", req.Text)
+		a.sessLog.Info("turn.started", "text", req.Text, "files", req.Files)
 	}
 
 	if a.agent != nil {
-		a.agent.RunTurn(ctx, a, agent.PromptReq{Text: req.Text, Files: req.Files})
+		a.agent.RunTurn(ctx, a, agent.PromptReq{Text: req.Text, Files: req.Files, Mode: req.Mode})
 	} else {
 		a.appendMessage("assistant", map[string]any{"v": 1, "text": "agent 未配置"})
 	}
@@ -303,6 +422,8 @@ func (a *Actor) runTurn(req PromptReq) {
 	if a.sessLog != nil {
 		a.sessLog.Info("turn.finished")
 	}
+	// 每轮结束将本会话（含该 key 的全局/工作区）记忆快照持久化到会话文件夹
+	a.persistMemory()
 	a.setStatus("idle")
 }
 
@@ -316,6 +437,12 @@ func (a *Actor) Append(role string, content any) {
 	a.appendMessage(role, content)
 }
 func (a *Actor) Notify(typ string, data any) {
+	if a.sessLog != nil {
+		switch typ {
+		case "approval.requested", "approval.resolved", "turn.done", "turn.failed", "session.updated":
+			a.sessLog.Info("event."+typ, "data", data)
+		}
+	}
 	a.broadcast(Event{Type: typ, Data: data})
 }
 
@@ -335,7 +462,93 @@ func (a *Actor) appendMessage(role string, content any) {
 		return
 	}
 	a.nextSeq++
+	// 完整输入输出记录到会话日志
+	if a.sessLog != nil {
+		a.sessLog.Info("message", "seq", seq, "role", role, "content", content)
+	}
 	a.broadcast(Event{Type: "message.created", Seq: seq, Data: map[string]any{"id": id, "role": role, "content": content}})
+}
+
+type memoryEntry struct {
+	Key        string `json:"key"`
+	Content    string `json:"content"`
+	Scope      string `json:"scope"`
+	Importance int    `json:"importance"`
+	Source     string `json:"source"`
+	Updated    int64  `json:"time_updated"`
+}
+
+// persistMemory 将会话级记忆（含该 key 的 global/workspace 记忆）快照到会话文件夹，
+// 用于会话快速恢复与人工/离线检查。
+func (a *Actor) persistMemory() {
+	if a.db == nil || a.dir == "" {
+		return
+	}
+	rows, err := a.db.Query(
+		`SELECT key, content, scope, importance, source, time_updated FROM memory
+		 WHERE key_id = ? AND (scope IN ('global','workspace') OR (scope = 'session' AND session_id = ?))
+		 ORDER BY CASE scope WHEN 'session' THEN 0 WHEN 'workspace' THEN 1 ELSE 2 END, importance DESC, time_updated DESC`,
+		a.KeyID, a.ID,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	entries := make([]memoryEntry, 0, 8)
+	for rows.Next() {
+		var e memoryEntry
+		if rows.Scan(&e.Key, &e.Content, &e.Scope, &e.Importance, &e.Source, &e.Updated) == nil {
+			entries = append(entries, e)
+		}
+	}
+	if rows.Err() != nil {
+		return
+	}
+
+	jsonData, err := json.MarshalIndent(map[string]any{
+		"session_id": a.ID,
+		"key_id":     a.KeyID,
+		"updated":    time.Now().Unix(),
+		"entries":    entries,
+	}, "", "  ")
+	if err != nil {
+		return
+	}
+	writeFileAtomic(filepath.Join(a.dir, "memory.json"), jsonData)
+
+	md := a.renderMemoryMarkdown(entries)
+	writeFileAtomic(filepath.Join(a.dir, "memory.md"), []byte(md))
+}
+
+func (a *Actor) renderMemoryMarkdown(entries []memoryEntry) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# Session Memory\n\n")
+	fmt.Fprintf(&sb, "- session: `%s`\n- key: `%s`\n- updated: %s\n\n", a.ID, a.KeyID, time.Now().Format(time.RFC3339))
+	if len(entries) == 0 {
+		sb.WriteString("（暂无记忆）\n")
+		return sb.String()
+	}
+	lastScope := ""
+	for _, e := range entries {
+		if e.Scope != lastScope {
+			if lastScope != "" {
+				sb.WriteString("\n")
+			}
+			fmt.Fprintf(&sb, "## %s\n\n", e.Scope)
+			lastScope = e.Scope
+		}
+		fmt.Fprintf(&sb, "- **[%s]** %s (importance=%d, source=%s)\n", e.Key, e.Content, e.Importance, e.Source)
+	}
+	return sb.String()
+}
+
+func writeFileAtomic(path string, data []byte) {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 func (a *Actor) setStatus(status string) {
