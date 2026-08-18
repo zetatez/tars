@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import { execFile, spawn } from "node:child_process";
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { API } from "../api.js";
@@ -14,6 +13,9 @@ import { Prompt } from "./prompt.js";
 import { DialogSelect, DialogConfirm, DialogHelp, DialogApproval, type SelectOption } from "./dialog.js";
 import { SLASH_COMMANDS } from "./keys.js";
 import { Logo } from "./home.js";
+import { openEditor } from "./editor.js";
+import { runSsh, runVim, runBang } from "./commands.js";
+import { type SshTarget } from "./ssh.js";
 
 const PAGE = 8;
 
@@ -37,36 +39,6 @@ function writeClipboard(text: string): Promise<boolean> {
   });
 }
 
-async function openEditor(initial: string): Promise<string | null> {
-  try {
-    const dir = await mkdtemp(path.join(tmpdir(), "tars-edit-"));
-    const file = path.join(dir, "prompt.md");
-    await writeFile(file, initial);
-    const editor = process.env.EDITOR || process.env.VISUAL || "vi";
-    const wasRaw = process.stdin.isRaw;
-    process.stdin.setRawMode(false);
-    return await new Promise<string | null>((resolve) => {
-      const child = spawn(editor, [file], { stdio: "inherit" });
-      child.on("error", () => {
-        process.stdin.setRawMode(!!wasRaw);
-        resolve(null);
-      });
-      child.on("exit", async (code) => {
-        process.stdin.setRawMode(!!wasRaw);
-        if (code !== 0) return resolve(null);
-        try {
-          const content = await readFile(file, "utf8");
-          resolve(content.trim());
-        } catch {
-          resolve(null);
-        }
-      });
-    });
-  } catch {
-    return null;
-  }
-}
-
 function transcriptLines(messages: Message[]): string {
   const lines: string[] = [];
   for (const m of messages) {
@@ -88,11 +60,13 @@ export function TuiApp({
   sessionId,
   initialMessages,
   initialPrompt,
+  sshTarget,
 }: {
   api: API;
   sessionId?: string;
   initialMessages?: Message[];
   initialPrompt?: string;
+  sshTarget: SshTarget;
 }) {
   const { exit } = useApp();
   const [view, setView] = useState<View>(sessionId ? { type: "session", id: sessionId } : { type: "home" });
@@ -101,6 +75,7 @@ export function TuiApp({
   const [everTyped, setEverTyped] = useState(false);
 
   const toggleMode = () => setMode((m) => (m === "build" ? "plan" : "build"));
+  const setModeDirect = (m: "build" | "plan") => setMode(m);
   const markTyped = () => setEverTyped(true);
 
   const quit = () => {
@@ -112,8 +87,10 @@ export function TuiApp({
     return (
       <HomeView
         api={api}
+        sshTarget={sshTarget}
         mode={mode}
         onToggleMode={toggleMode}
+        onSetMode={setModeDirect}
         everTyped={everTyped}
         onTyped={markTyped}
         onStart={async (text) => {
@@ -135,11 +112,13 @@ export function TuiApp({
     <SessionView
       key={view.id}
       api={api}
+      sshTarget={sshTarget}
       sessionId={view.id}
       initialMessages={initialMessages && view.id === sessionId ? initialMessages : []}
       initialPrompt={pendingPrompt}
       mode={mode}
       onToggleMode={toggleMode}
+      onSetMode={setModeDirect}
       everTyped={everTyped}
       onTyped={markTyped}
       onNew={() => {
@@ -153,8 +132,10 @@ export function TuiApp({
 
 function HomeView({
   api,
+  sshTarget,
   mode,
   onToggleMode,
+  onSetMode,
   everTyped,
   onTyped,
   onStart,
@@ -162,8 +143,10 @@ function HomeView({
   onExit,
 }: {
   api: API;
+  sshTarget: SshTarget;
   mode: "build" | "plan";
   onToggleMode: () => void;
+  onSetMode: (m: "build" | "plan") => void;
   everTyped: boolean;
   onTyped: () => void;
   onStart: (text: string) => void;
@@ -171,9 +154,18 @@ function HomeView({
   onExit: () => void;
 }) {
   const [leaderPending, setLeaderPending] = useState(false);
-  const [dialog, setDialog] = useState<null | { kind: "sessions" } | { kind: "help" }>(null);
+  const [dialog, setDialog] = useState<null | { kind: "sessions" } | { kind: "help" } | { kind: "models" } | { kind: "agents" }>(null);
   const [sessions, setSessions] = useState<SelectOption[]>([]);
+  const [modelOptions, setModelOptions] = useState<SelectOption[]>([]);
+  const [toast, setToast] = useState<{ text: string; kind: "info" | "error" | "warning" } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const promptApi = useRef<{ setText(text: string): void } | null>(null);
+
+  const showToast = useCallback((text: string, kind: "info" | "error" | "warning" = "info") => {
+    setToast({ text, kind });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
+  }, []);
 
   useEffect(() => {
     if (!leaderPending) return;
@@ -182,8 +174,80 @@ function HomeView({
   }, [leaderPending]);
 
   const handleSubmit = (text: string) => {
-    if (text.trim() === "exit" || text.trim() === "quit" || text.trim() === ":q") {
+    const trimmed = text.trim();
+    if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       onExit();
+      return;
+    }
+    if (trimmed.startsWith("!") && trimmed.length > 1) {
+      runBang(sshTarget, trimmed.slice(1).trim(), showToast);
+      return;
+    }
+    if (trimmed.startsWith("/")) {
+      const parts = trimmed.slice(1).split(/\s+/);
+      const cmd = parts[0].toLowerCase();
+      const arg = parts.slice(1).join(" ");
+      const found = SLASH_COMMANDS.find((c) => c.name === cmd || c.aliases.includes(cmd));
+      switch (found?.name) {
+        case "new":
+          showToast("已在首页，直接输入问题即可创建新会话", "info");
+          break;
+        case "sessions":
+          openSessions();
+          break;
+        case "ssh":
+          runSsh(sshTarget, showToast);
+          break;
+        case "vim":
+          void runVim(sshTarget, arg, showToast);
+          break;
+        case "agents":
+          setDialog({ kind: "agents" });
+          break;
+        case "models":
+          void (async () => {
+            try {
+              const { models } = await api.models();
+              setModelOptions(
+                models.map((m) => ({ key: m.model, title: m.model, detail: m.provider || "默认" })),
+              );
+              setDialog({ kind: "models" });
+            } catch (err) {
+              showToast((err as Error).message, "error");
+            }
+          })();
+          break;
+        case "status":
+          void (async () => {
+            let version = "";
+            try {
+              const v = await api.version();
+              version = v.version || "";
+            } catch {}
+            showToast([version ? `server: v${version}` : "server: -", `mode: ${mode}`].join("\n"), "info");
+          })();
+          break;
+        case "init":
+        case "themes":
+        case "skills":
+        case "variants":
+        case "mcps":
+          showToast(`暂不支持 /${cmd}`, "warning");
+          break;
+        case "help":
+          setDialog({ kind: "help" });
+          break;
+        case "exit":
+          onExit();
+          break;
+        default:
+          // 需要会话的命令（copy/export/rollback/delete/editor）
+          if (["copy", "export", "rollback", "delete", "editor"].includes(found?.name ?? "")) {
+            showToast("请先创建会话（直接输入问题即可）", "warning");
+          } else {
+            showToast(`unknown command: /${cmd}`, "error");
+          }
+      }
       return;
     }
     onStart(text);
@@ -259,36 +323,82 @@ function HomeView({
           onCancel={() => setDialog(null)}
         />
       ) : null}
+      {dialog?.kind === "models" ? (
+        <DialogSelect
+          title="Models"
+          options={modelOptions}
+          onSelect={(o) => {
+            setDialog(null);
+            showToast(`模型选择仅对会话生效：先创建会话后再 /models 切换`, "info");
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      ) : null}
+      {dialog?.kind === "agents" ? (
+        <DialogSelect
+          title="Agents"
+          options={[
+            { key: "build", title: "Build", detail: "执行工具" },
+            { key: "plan", title: "Plan", detail: "只读规划" },
+          ]}
+          onSelect={(o) => {
+            setDialog(null);
+            onSetMode(o.key as "build" | "plan");
+            showToast(`agent → ${o.key}`);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      ) : null}
       {dialog?.kind === "help" ? <DialogHelp onClose={() => setDialog(null)} /> : null}
+
+      {toast ? (
+        <Box position="absolute" top={1} left={0} right={0} justifyContent="center" alignItems="center">
+          <Box flexDirection="column" borderStyle="single" borderColor={theme.borderMuted} backgroundColor={theme.backgroundPanel}>
+            <Box paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
+              <Text
+                color={toast.kind === "error" ? theme.error : toast.kind === "warning" ? theme.warning : theme.text}
+                wrap="wrap"
+              >
+                {toast.text}
+              </Text>
+            </Box>
+          </Box>
+        </Box>
+      ) : null}
     </Box>
   );
 }
 
 type DialogState =
   | null
-  | { kind: "palette" }
   | { kind: "sessions" }
+  | { kind: "models" }
+  | { kind: "agents" }
   | { kind: "confirmDelete" }
   | { kind: "help" };
 
 function SessionView({
   api,
+  sshTarget,
   sessionId,
   initialMessages,
   initialPrompt,
   mode,
   onToggleMode,
+  onSetMode,
   everTyped,
   onTyped,
   onNew,
   onExit,
 }: {
   api: API;
+  sshTarget: SshTarget;
   sessionId: string;
   initialMessages: Message[];
   initialPrompt?: string;
   mode: "build" | "plan";
   onToggleMode: () => void;
+  onSetMode: (m: "build" | "plan") => void;
   everTyped: boolean;
   onTyped: () => void;
   onNew: () => void;
@@ -313,7 +423,10 @@ function SessionView({
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [sessions, setSessions] = useState<SelectOption[]>([]);
+  const [modelOptions, setModelOptions] = useState<SelectOption[]>([]);
   const [approvals, setApprovals] = useState<Array<{ id: string; action: string; resource: string }>>([]);
+
+  const modelName = () => (provider ? `${provider}:` : "") + (model || "tars");
 
   const frozenRef = useRef<number | null>(null);
   const lastSeqRef = useRef(initialMessages.length ? initialMessages[initialMessages.length - 1].seq : 0);
@@ -392,14 +505,20 @@ function SessionView({
         onExit();
         return;
       }
+      if (trimmed.startsWith("!") && trimmed.length > 1) {
+        runBang(sshTarget, trimmed.slice(1).trim(), showToast);
+        return;
+      }
       if (trimmed.startsWith("/")) {
-        const cmd = trimmed.slice(1).split(/\s+/)[0].toLowerCase();
+        const parts = trimmed.slice(1).split(/\s+/);
+        const cmd = parts[0].toLowerCase();
+        const arg = parts.slice(1).join(" ");
         const found = SLASH_COMMANDS.find((c) => c.name === cmd || c.aliases.includes(cmd));
         switch (found?.name) {
           case "new":
             onNew();
             break;
-          case "resume":
+          case "sessions":
             void (async () => {
               try {
                 const { sessions: list } = await api.listSessions();
@@ -415,6 +534,71 @@ function SessionView({
                 showToast((err as Error).message, "error");
               }
             })();
+            break;
+          case "status":
+            void (async () => {
+              let version = "";
+              try {
+                const v = await api.version();
+                version = v.version || "";
+              } catch {}
+              const model = modelName();
+              showToast(
+                [
+                  version ? `server: v${version}` : "server: -",
+                  `session: ${sid.slice(0, 8)} · status: ${status}`,
+                  `cwd: ${cwd}`,
+                  `mode: ${mode} · model: ${model}`,
+                  `messages: ${messages.length}`,
+                ].join("\n"),
+                "info",
+              );
+            })();
+            break;
+          case "models":
+            void (async () => {
+              try {
+                const { models } = await api.models();
+                if (!models.length) {
+                  showToast("服务端未配置模型", "warning");
+                  return;
+                }
+                setModelOptions(
+                  models.map((m) => ({
+                    key: m.model,
+                    title: m.model,
+                    detail: m.provider || "默认",
+                  })),
+                );
+                setDialog({ kind: "models" });
+              } catch (err) {
+                showToast((err as Error).message, "error");
+              }
+            })();
+            break;
+          case "agents":
+            setDialog({ kind: "agents" });
+            break;
+          case "init":
+            showToast(`会话 cwd: ${cwd}（tars 会话即项目，无独立初始化）`, "info");
+            break;
+          case "themes":
+            showToast("仅支持当前主题", "warning");
+            break;
+          case "skills":
+            showToast("暂不支持 skills", "warning");
+            break;
+          case "variants":
+            showToast("暂不支持 variants", "warning");
+            break;
+          case "mcps":
+            showToast("暂不支持 mcps", "warning");
+            break;
+          case "ssh":
+            runSsh(sshTarget, showToast);
+            break;
+          case "vim":
+            void runVim(sshTarget, arg, showToast);
             break;
           case "copy":
             void (async () => {
@@ -470,7 +654,7 @@ function SessionView({
       sendPrompt(text);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [status, messages, sid],
+    [status, messages, sid, mode, cwd, sshTarget, showToast],
   );
 
   function sendPrompt(text: string) {
@@ -729,6 +913,42 @@ function SessionView({
           onSelect={(o) => {
             setDialog(null);
             loadSession(o.key);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      ) : null}
+      {dialog?.kind === "models" ? (
+        <DialogSelect
+          title="Models"
+          options={modelOptions}
+          onSelect={(o) => {
+            setDialog(null);
+            void api
+              .updateSession(sid, o.key)
+              .then(() => {
+                setModel(o.key);
+                return api.getSession(sid);
+              })
+              .then((s) => {
+                if (s.provider) setProvider(s.provider);
+                showToast(`model → ${o.key}`);
+              })
+              .catch((err) => showToast((err as Error).message, "error"));
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      ) : null}
+      {dialog?.kind === "agents" ? (
+        <DialogSelect
+          title="Agents"
+          options={[
+            { key: "build", title: "Build", detail: "执行工具" },
+            { key: "plan", title: "Plan", detail: "只读规划" },
+          ]}
+          onSelect={(o) => {
+            setDialog(null);
+            onSetMode(o.key as "build" | "plan");
+            showToast(`agent → ${o.key}`);
           }}
           onCancel={() => setDialog(null)}
         />

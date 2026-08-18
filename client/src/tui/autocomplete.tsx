@@ -114,7 +114,7 @@ export function Autocomplete({
       register(null);
       return;
     }
-    const shown = items.slice(0, 10);
+    const shown = items.slice(0, 20);
     const api: AutocompleteApi = {
       get visible() {
         return true;
@@ -149,7 +149,7 @@ export function Autocomplete({
     }
     return null;
   }
-  const shown = items.slice(0, 10);
+  const shown = items.slice(0, 20);
   const sel = Math.min(selected, shown.length - 1);
   return (
     <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor={theme.border}>

@@ -54,6 +54,12 @@ export class API {
   getSession(id: string): Promise<Session> {
     return this.req("GET", `/api/v1/session/${id}`);
   }
+  models(): Promise<{ models: Array<{ provider: string; model: string }>; default?: string }> {
+    return this.req("GET", `/api/v1/models`);
+  }
+  updateSession(id: string, model: string): Promise<{ model: string }> {
+    return this.req("PATCH", `/api/v1/session/${id}`, { model });
+  }
   deleteSession(id: string): Promise<void> {
     return this.req("DELETE", `/api/v1/session/${id}`);
   }

@@ -431,8 +431,15 @@ func (a *Actor) SessionID() string    { return a.ID }
 func (a *Actor) SessionKeyID() string { return a.KeyID }
 func (a *Actor) SessionCwd() string   { return a.Cwd }
 func (a *Actor) SessionModel() string { return a.Model }
-func (a *Actor) SessionRole() string  { return a.Role }
-func (a *Actor) SessionDepth() int    { return a.Depth }
+
+// SetModel 更新会话模型（下次 turn 生效），同步写回 DB
+func (a *Actor) SetModel(model string) error {
+	a.Model = model
+	_, err := a.db.Exec(`UPDATE session SET model = ?, time_updated = ? WHERE id = ?`, model, time.Now().Unix(), a.ID)
+	return err
+}
+func (a *Actor) SessionRole() string { return a.Role }
+func (a *Actor) SessionDepth() int   { return a.Depth }
 func (a *Actor) Append(role string, content any) {
 	a.appendMessage(role, content)
 }

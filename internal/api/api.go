@@ -51,7 +51,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/session", s.auth(s.handleCreateSession))
 	mux.HandleFunc("GET /api/v1/session", s.auth(s.handleListSessions))
 	mux.HandleFunc("GET /api/v1/session/{id}", s.auth(s.handleGetSession))
+	mux.HandleFunc("PATCH /api/v1/session/{id}", s.auth(s.handleUpdateSession))
 	mux.HandleFunc("DELETE /api/v1/session/{id}", s.auth(s.handleDeleteSession))
+	mux.HandleFunc("GET /api/v1/models", s.auth(s.handleModels))
 	mux.HandleFunc("POST /api/v1/session/{id}/prompt", s.auth(s.handlePrompt))
 	mux.HandleFunc("POST /api/v1/session/{id}/interrupt", s.auth(s.handleInterrupt))
 	mux.HandleFunc("POST /api/v1/session/{id}/rollback", s.auth(s.handleRollback))
@@ -463,6 +465,68 @@ func (s *Server) resolveSessionModel(model string) (string, string) {
 		model = s.cfg.Agent.Model
 	}
 	return "", model
+}
+
+// handleModels 列出可用 provider 与模型（供 /models 选择）
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	type m struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	out := []m{}
+	for _, p := range s.cfg.LLM.Providers {
+		if p.Model != "" {
+			out = append(out, m{Provider: p.Name, Model: p.Model})
+		}
+	}
+	found := false
+	for _, mm := range out {
+		if mm.Model == s.cfg.Agent.Model {
+			found = true
+			break
+		}
+	}
+	if s.cfg.Agent.Model != "" && !found {
+		out = append(out, m{Provider: "", Model: s.cfg.Agent.Model})
+	}
+	if len(out) == 0 && s.llm != nil {
+		p, model := s.llm.Resolve("")
+		if model != "" {
+			out = append(out, m{Provider: p, Model: model})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": out, "default": s.cfg.Agent.Model})
+}
+
+// handleUpdateSession 更新会话（目前仅 model）
+func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.mgr.Get(r.PathValue("id"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	ki := keyInfo(r)
+	if a.KeyID != ki.KeyID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
+		return
+	}
+	if body.Model == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model required"})
+		return
+	}
+	if err := a.SetModel(body.Model); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("session model updated", "session_id", a.ID, "model", body.Model)
+	writeJSON(w, http.StatusOK, map[string]any{"model": body.Model})
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {

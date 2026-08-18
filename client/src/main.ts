@@ -289,12 +289,16 @@ async function cmdTui(api: API, args: string[]): Promise<void> {
   }
   const { render } = await import("ink");
   const { TuiApp } = await import("./tui.js");
+  const { sshTargetFromBase } = await import("./tui/ssh.js");
+  const sshUser = flag(args, "--ssh-user") ?? process.env.TARS_SSH_USER;
+  const sshPort = Number(flag(args, "--ssh-port") ?? process.env.TARS_SSH_PORT ?? "0");
   render(
     createElement(TuiApp, {
       api,
       sessionId: sid ?? undefined,
       initialMessages,
       initialPrompt,
+      sshTarget: sshTargetFromBase(api.baseURL, sshUser, Number.isFinite(sshPort) ? sshPort : 0),
     }),
     { exitOnCtrlC: false },
   );
@@ -361,6 +365,7 @@ async function main(): Promise<void> {
       }
       case "tui":
       case "ui":
+        // tui [--session <id>] [--continue] [--prompt <text>] [--ssh-user <u>] [--ssh-port <p>]
         await cmdTui(api, args);
         break;
       default:
