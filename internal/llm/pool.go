@@ -39,15 +39,17 @@ type Pool struct {
 	strategy    string
 	maxAttempts int
 	backoff     time.Duration
+	maxBackoff  time.Duration
 	mu          sync.Mutex
 	rrIdx       int
 }
 
 func NewPool(cfg config.LLM) *Pool {
 	p := &Pool{
-		strategy:    cfg.Strategy,
+		strategy:    cfg.LBStrategy,
 		maxAttempts: cfg.Retry.MaxAttempts,
 		backoff:     cfg.Retry.Backoff.Duration,
+		maxBackoff:  cfg.Retry.MaxBackoff.Duration,
 	}
 	if p.strategy == "" {
 		p.strategy = "priority"
@@ -59,9 +61,9 @@ func NewPool(cfg config.LLM) *Pool {
 		var provider Provider
 		switch pc.Type {
 		case "anthropic":
-			provider = newAnthropicProvider(pc, cfg.IdleTimeout.Duration)
+			provider = newAnthropicProvider(pc, cfg.StreamIdleTimeout.Duration)
 		default:
-			provider = newOpenAIProvider(pc, cfg.IdleTimeout.Duration)
+			provider = newOpenAIProvider(pc, cfg.StreamIdleTimeout.Duration)
 		}
 		p.entries = append(p.entries, &entry{
 			provider:      provider,
@@ -86,6 +88,7 @@ func (p *Pool) Chat(ctx context.Context, req ChatRequest) (*Result, error) {
 	}
 	seen := map[string]bool{}
 	var lastErr error
+	delay := p.backoff
 
 	for attempt := 0; attempt < p.maxAttempts*len(p.entries); attempt++ {
 		e := p.pick(seen)
@@ -96,7 +99,7 @@ func (p *Pool) Chat(ctx context.Context, req ChatRequest) (*Result, error) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(p.backoff):
+			case <-time.After(delay):
 			}
 		}
 		res, err := e.provider.Chat(ctx, req)
@@ -108,7 +111,17 @@ func (p *Pool) Chat(ctx context.Context, req ChatRequest) (*Result, error) {
 			return nil, err
 		}
 		lastErr = err
+		var unavail *UnavailableError
+		if errors.As(err, &unavail) {
+			// provider 不可用（限流/配额/鉴权/5xx）：立即标记并快速 failover，不等待退避
+			p.markUnavailable(e)
+			continue
+		}
 		p.markFailure(e)
+		delay *= 2
+		if p.maxBackoff > 0 && delay > p.maxBackoff {
+			delay = p.maxBackoff
+		}
 	}
 	if lastErr == nil {
 		lastErr = errors.New("all llm providers failed")
@@ -173,4 +186,12 @@ func (p *Pool) markHealthy(e *entry) {
 	defer p.mu.Unlock()
 	e.healthy = true
 	e.failCount = 0
+}
+
+func (p *Pool) markUnavailable(e *entry) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e.healthy = false
+	e.failCount = 0
+	e.cooldownUntil = time.Now().Add(30 * time.Second)
 }

@@ -148,7 +148,7 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any,
 		prompt, _ := args["prompt"].(string)
 		cwd, _ := args["cwd"].(string)
 		model, _ := args["model"].(string)
-		text, err := s.mgr.RunSync(keyID, cwd, model, role, prompt)
+		text, err := s.mgr.RunSync(keyID, cwd, model, role, prompt, 0)
 		if err != nil {
 			return nil, err
 		}

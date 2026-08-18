@@ -1,5 +1,13 @@
 package llm
 
+// UnavailableError 表示该 provider 当前不可用（限流/配额耗尽/鉴权失败/5xx）。
+// 命中时应立即 failover 到其他 provider，而非重试同一节点。
+type UnavailableError struct {
+	Reason string
+}
+
+func (e *UnavailableError) Error() string { return "provider unavailable: " + e.Reason }
+
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`

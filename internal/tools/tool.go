@@ -9,13 +9,14 @@ import (
 	"tars/internal/llm"
 )
 
-type DelegateFunc func(ctx context.Context, prompt, cwd, model, keyID, role string) (string, error)
+type DelegateFunc func(ctx context.Context, prompt, cwd, model, keyID, role string, depth int) (string, error)
 
 type Scope struct {
 	Cwd           string
 	KeyID         string
 	Role          string
 	SessionID     string
+	Depth         int
 	DB            *sql.DB
 	Cfg           *config.Config
 	Delegate      DelegateFunc

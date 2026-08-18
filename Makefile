@@ -30,7 +30,7 @@ run:
 install: build
 	install -Dm755 $(BUILD_DIR)/$(BINARY) /opt/tars/bin/$(BINARY)
 	@test -f /opt/tars/config.yaml || (install -Dm644 config.example.yaml /opt/tars/config.yaml && echo "created /opt/tars/config.yaml")
-	@mkdir -p /opt/tars/data
+	@mkdir -p /opt/tars/data /opt/tars/work
 	@ln -sf /opt/tars/bin/$(BINARY) /usr/local/bin/$(BINARY)
 	@echo "installed: /opt/tars/bin/$(BINARY)  ->  /usr/local/bin/$(BINARY)"
 	@echo "config: /opt/tars/config.yaml  data: /opt/tars/data"

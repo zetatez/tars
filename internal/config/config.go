@@ -58,10 +58,10 @@ type Agent struct {
 }
 
 type LLM struct {
-	Strategy    string        `yaml:"strategy"`
-	IdleTimeout Duration      `yaml:"idle_timeout"`
-	Retry       Retry         `yaml:"retry"`
-	Providers   []LLMProvider `yaml:"providers"`
+	LBStrategy        string        `yaml:"lb_strategy"`
+	StreamIdleTimeout Duration      `yaml:"stream_idle_timeout"`
+	Retry             Retry         `yaml:"retry"`
+	Providers         []LLMProvider `yaml:"providers"`
 }
 
 type LLMProvider struct {
@@ -77,6 +77,7 @@ type LLMProvider struct {
 type Retry struct {
 	MaxAttempts int      `yaml:"max_attempts"`
 	Backoff     Duration `yaml:"backoff"`
+	MaxBackoff  Duration `yaml:"max_backoff"`
 }
 
 type Tenant struct {
@@ -166,7 +167,6 @@ type Tools struct {
 }
 
 type Exec struct {
-	Enabled   bool     `yaml:"enabled"`
 	Timeout   Duration `yaml:"timeout"`
 	MaxOutput int      `yaml:"max_output"`
 }
@@ -209,7 +209,7 @@ func Default() *Config {
 	return &Config{
 		Listen:     ":8899",
 		DataDir:    "/opt/tars/data",
-		DefaultCwd: "/home/agent/work",
+		DefaultCwd: "/opt/tars/work",
 		Agent: Agent{
 			SystemPrompt: "你是 tars，一个通用 AI agent，可以分析处理任意问题。",
 			Temperature:  0.0,
@@ -219,9 +219,9 @@ func Default() *Config {
 		},
 		PromptMode: "interrupt",
 		LLM: LLM{
-			Strategy:    "priority",
-			IdleTimeout: Duration{60 * time.Second},
-			Retry:       Retry{MaxAttempts: 3, Backoff: Duration{2 * time.Second}},
+			LBStrategy:        "priority",
+			StreamIdleTimeout: Duration{60 * time.Second},
+			Retry:             Retry{MaxAttempts: 3, Backoff: Duration{2 * time.Second}, MaxBackoff: Duration{30 * time.Second}},
 			Providers: []LLMProvider{
 				{
 					Name:          "deepseek",
@@ -260,7 +260,7 @@ func Default() *Config {
 			Embedder: "none",
 		},
 		Tools: Tools{
-			Exec: Exec{Enabled: true, Timeout: Duration{2 * time.Minute}, MaxOutput: 1048576},
+			Exec: Exec{Timeout: Duration{30 * time.Minute}, MaxOutput: 10 * 1024 * 1024},
 		},
 		Storage: Storage{
 			Synchronous:           "full",

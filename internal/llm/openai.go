@@ -74,8 +74,12 @@ func (p *openaiProvider) Chat(ctx context.Context, req ChatRequest) (*Result, er
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		lower := strings.ToLower(string(b))
-		if strings.Contains(lower, "context") || strings.Contains(lower, "length") || strings.Contains(lower, "token") {
+		if resp.StatusCode == http.StatusBadRequest && (strings.Contains(lower, "context") || strings.Contains(lower, "length")) {
 			return nil, ErrContextOverflow
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusUnauthorized ||
+			resp.StatusCode == http.StatusForbidden || resp.StatusCode >= 500 {
+			return nil, &UnavailableError{Reason: fmt.Sprintf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))}
 		}
 		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}

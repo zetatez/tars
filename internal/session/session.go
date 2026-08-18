@@ -16,6 +16,7 @@ import (
 	"tars/internal/agent"
 	"tars/internal/config"
 	"tars/internal/log"
+	"tars/internal/quota"
 )
 
 type Event struct {
@@ -36,12 +37,14 @@ type Subscriber struct {
 }
 
 type Actor struct {
-	ID     string
-	KeyID  string
-	Cwd    string
-	Model  string
-	Status string
-	Role   string
+	ID         string
+	KeyID      string
+	Cwd        string
+	Model      string
+	Status     string
+	Role       string
+	Depth      int
+	promptMode string
 
 	agent *agent.Agent
 
@@ -72,9 +75,13 @@ type Manager struct {
 	agent      *agent.Agent
 	dataDir    string
 	sessCfg    config.Session
+	qc         *quota.Checker
+	promptMode string
 }
 
-func NewManager(db *sql.DB, log *slog.Logger, defaultCwd string, ag *agent.Agent, dataDir string, sessCfg config.Session) *Manager {
+const MaxAgentDepth = 3
+
+func NewManager(db *sql.DB, log *slog.Logger, defaultCwd string, ag *agent.Agent, dataDir string, sessCfg config.Session, qc *quota.Checker, promptMode string) *Manager {
 	return &Manager{
 		sessions:   make(map[string]*Actor),
 		db:         db,
@@ -83,12 +90,17 @@ func NewManager(db *sql.DB, log *slog.Logger, defaultCwd string, ag *agent.Agent
 		agent:      ag,
 		dataDir:    dataDir,
 		sessCfg:    sessCfg,
+		qc:         qc,
+		promptMode: promptMode,
 	}
 }
 
-func (m *Manager) Create(keyID, cwd, model, role string) (*Actor, error) {
+func (m *Manager) Create(keyID, cwd, model, role string, depth int, promptMode string) (*Actor, error) {
 	if cwd == "" {
 		cwd = m.defaultCwd
+	}
+	if promptMode == "" {
+		promptMode = m.promptMode
 	}
 	id := uuid.NewString()
 	now := time.Now().Unix()
@@ -100,19 +112,21 @@ func (m *Manager) Create(keyID, cwd, model, role string) (*Actor, error) {
 		return nil, err
 	}
 	a := &Actor{
-		ID:        id,
-		KeyID:     keyID,
-		Cwd:       cwd,
-		Model:     model,
-		Status:    "idle",
-		Role:      role,
-		agent:     m.agent,
-		ch:        make(chan PromptReq, 8),
-		stop:      make(chan struct{}),
-		subs:      make(map[int64]*Subscriber),
-		processed: make(map[string]struct{}),
-		db:        m.db,
-		log:       m.log,
+		ID:         id,
+		KeyID:      keyID,
+		Cwd:        cwd,
+		Model:      model,
+		Status:     "idle",
+		Role:       role,
+		Depth:      depth,
+		promptMode: promptMode,
+		agent:      m.agent,
+		ch:         make(chan PromptReq, 8),
+		stop:       make(chan struct{}),
+		subs:       make(map[int64]*Subscriber),
+		processed:  make(map[string]struct{}),
+		db:         m.db,
+		log:        m.log,
 	}
 	var maxSeq int64
 	if err := m.db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM message WHERE session_id = ?`, id).Scan(&maxSeq); err != nil {
@@ -169,8 +183,19 @@ func (m *Manager) Delete(id string) error {
 	return err
 }
 
-func (m *Manager) RunSync(keyID, cwd, model, role, text string) (string, error) {
-	a, err := m.Create(keyID, cwd, model, role)
+func (m *Manager) RunSync(keyID, cwd, model, role, text string, depth int) (string, error) {
+	if depth > MaxAgentDepth {
+		return "", errors.New("max agent nesting depth exceeded")
+	}
+	if m.qc != nil {
+		if err := m.qc.CheckCreateSession(keyID); err != nil {
+			return "", err
+		}
+		if err := m.qc.CheckTurn(keyID); err != nil {
+			return "", err
+		}
+	}
+	a, err := m.Create(keyID, cwd, model, role, depth, "")
 	if err != nil {
 		return "", err
 	}
@@ -232,7 +257,7 @@ func (a *Actor) Prompt(req PromptReq) error {
 		}
 		a.processed[req.IdempotencyKey] = struct{}{}
 	}
-	if a.turnC != nil {
+	if a.promptMode != "queue" && a.turnC != nil {
 		a.turnC()
 	}
 	a.mu.Unlock()
@@ -286,6 +311,7 @@ func (a *Actor) SessionKeyID() string { return a.KeyID }
 func (a *Actor) SessionCwd() string   { return a.Cwd }
 func (a *Actor) SessionModel() string { return a.Model }
 func (a *Actor) SessionRole() string  { return a.Role }
+func (a *Actor) SessionDepth() int    { return a.Depth }
 func (a *Actor) Append(role string, content any) {
 	a.appendMessage(role, content)
 }

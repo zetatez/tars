@@ -377,17 +377,21 @@ func (s *Server) handleKeyDataDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	ki := keyInfo(r)
 	var body struct {
-		Cwd   string `json:"cwd"`
-		Model string `json:"model"`
+		Cwd        string `json:"cwd"`
+		Model      string `json:"model"`
+		PromptMode string `json:"prompt_mode"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.PromptMode == "" {
+		body.PromptMode = s.cfg.PromptMode
+	}
 	if s.quota != nil {
 		if err := s.quota.CheckCreateSession(ki.KeyID); err != nil {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 			return
 		}
 	}
-	a, err := s.mgr.Create(ki.KeyID, body.Cwd, body.Model, ki.Role)
+	a, err := s.mgr.Create(ki.KeyID, body.Cwd, body.Model, ki.Role, 0, body.PromptMode)
 	if err != nil {
 		s.log.Error("create session", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create session failed"})

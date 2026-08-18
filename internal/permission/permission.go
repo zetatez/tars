@@ -48,6 +48,11 @@ func ResolvePath(cwd, p string) string {
 
 func (e *Evaluator) IsSystemPath(p string) bool {
 	p = filepath.Clean(p)
+	for _, own := range []string{e.cfg.DataDir, e.cfg.DefaultCwd} {
+		if own != "" && (p == own || strings.HasPrefix(p, own+"/")) {
+			return false
+		}
+	}
 	for _, d := range e.cfg.SystemProt.SystemPaths {
 		if p == d || strings.HasPrefix(p, d+"/") {
 			return true

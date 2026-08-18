@@ -60,9 +60,9 @@ func main() {
 	ag := agent.New(cfg, st.DB(), llmPool, reg, permEval, logger)
 
 	qc := quota.New(cfg, st.DB())
-	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd, ag, cfg.DataDir, cfg.Session)
-	ag.SetDelegate(func(ctx context.Context, prompt, cwd, model, keyID, role string) (string, error) {
-		return mgr.RunSync(keyID, cwd, model, role, prompt)
+	mgr := session.NewManager(st.DB(), logger, cfg.DefaultCwd, ag, cfg.DataDir, cfg.Session, qc, cfg.PromptMode)
+	ag.SetDelegate(func(ctx context.Context, prompt, cwd, model, keyID, role string, depth int) (string, error) {
+		return mgr.RunSync(keyID, cwd, model, role, prompt, depth)
 	})
 	srv := api.New(cfg, st.DB(), logger, mgr, qc)
 	mcpSrv := mcp.New(cfg, st.DB(), logger, reg, permEval, mgr)

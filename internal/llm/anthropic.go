@@ -103,8 +103,12 @@ func (p *anthropicProvider) Chat(ctx context.Context, req ChatRequest) (*Result,
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		lower := strings.ToLower(string(b))
-		if strings.Contains(lower, "context") || strings.Contains(lower, "token") || strings.Contains(lower, "too long") {
+		if resp.StatusCode == http.StatusBadRequest && (strings.Contains(lower, "context") || strings.Contains(lower, "too long")) {
 			return nil, ErrContextOverflow
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusUnauthorized ||
+			resp.StatusCode == http.StatusForbidden || resp.StatusCode >= 500 {
+			return nil, &UnavailableError{Reason: fmt.Sprintf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))}
 		}
 		return nil, fmt.Errorf("anthropic status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}

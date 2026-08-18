@@ -27,6 +27,7 @@ type Session interface {
 	SessionCwd() string
 	SessionModel() string
 	SessionRole() string
+	SessionDepth() int
 	Append(role string, content any)
 	Notify(typ string, data any)
 }
@@ -82,6 +83,7 @@ func (a *Agent) RunTurn(ctx context.Context, sess Session, req PromptReq) {
 		KeyID:         sess.SessionKeyID(),
 		Role:          sess.SessionRole(),
 		SessionID:     sess.SessionID(),
+		Depth:         sess.SessionDepth(),
 		DB:            a.db,
 		Cfg:           a.cfg,
 		Delegate:      a.delegate,

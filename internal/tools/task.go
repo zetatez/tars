@@ -33,7 +33,7 @@ func taskTool() *Tool {
 				cwd = sc.Cwd
 			}
 			model, _ := args["model"].(string)
-			text, err := sc.Delegate(ctx, prompt, cwd, model, sc.KeyID, sc.Role)
+			text, err := sc.Delegate(ctx, prompt, cwd, model, sc.KeyID, sc.Role, sc.Depth+1)
 			if err != nil {
 				return nil, err
 			}
