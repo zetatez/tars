@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import path from "node:path";
 
 import { API } from "../api.js";
@@ -14,6 +15,7 @@ import { DialogSelect, DialogConfirm, DialogHelp, DialogApproval, type SelectOpt
 import { SLASH_COMMANDS } from "./keys.js";
 import { Logo } from "./home.js";
 import { openEditor } from "./editor.js";
+import { setSuspendImpl } from "./suspend.js";
 import { runSsh, runVim, runBang } from "./commands.js";
 import { type SshTarget } from "./ssh.js";
 
@@ -68,11 +70,16 @@ export function TuiApp({
   initialPrompt?: string;
   sshTarget: SshTarget;
 }) {
-  const { exit } = useApp();
+  const { exit, suspendTerminal } = useApp();
   const [view, setView] = useState<View>(sessionId ? { type: "session", id: sessionId } : { type: "home" });
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>(initialPrompt);
   const [mode, setMode] = useState<"build" | "plan">("build");
   const [everTyped, setEverTyped] = useState(false);
+
+  useEffect(() => {
+    setSuspendImpl(suspendTerminal);
+    return () => setSuspendImpl(null);
+  }, [suspendTerminal]);
 
   const toggleMode = () => setMode((m) => (m === "build" ? "plan" : "build"));
   const setModeDirect = (m: "build" | "plan") => setMode(m);
@@ -237,12 +244,18 @@ function HomeView({
         case "help":
           setDialog({ kind: "help" });
           break;
+        case "editor":
+          void openEditor("").then((content) => {
+            appendFileSync("/tmp/tars-ed-dbg.log", `editor resolve: ${JSON.stringify(content)} api=${promptApi.current ? 1 : 0}\n`);
+            if (content) promptApi.current?.setText(content);
+          });
+          break;
         case "exit":
           onExit();
           break;
         default:
-          // 需要会话的命令（copy/export/rollback/delete/editor）
-          if (["copy", "export", "rollback", "delete", "editor"].includes(found?.name ?? "")) {
+          // 需要会话的命令（copy/export/rollback/delete）
+          if (["copy", "export", "rollback", "delete"].includes(found?.name ?? "")) {
             showToast("请先创建会话（直接输入问题即可）", "warning");
           } else {
             showToast(`unknown command: /${cmd}`, "error");
@@ -284,32 +297,33 @@ function HomeView({
 
   return (
     <Box flexDirection="column" height="100%">
-      <Box flexGrow={1} flexDirection="column" alignItems="center" justifyContent="center" paddingLeft={2} paddingRight={2}>
-        <Logo />
+      <Box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
         <Box paddingTop={2}>
-          <Prompt
-            running={false}
-            elapsed={0}
-            escArmed={false}
-            model=""
-            mode={mode}
-            everTyped={everTyped}
-            leaderActive={leaderPending}
-            inputLocked={dialog !== null}
-            maxWidth={75}
-            center
-            onSubmit={handleSubmit}
-            onExit={onExit}
-            onInterrupt={() => {}}
-            onToggleMode={onToggleMode}
-            onTyped={onTyped}
-            onCommandSelect={(cmd) => handleSubmit(cmd)}
-            registerPrompt={(api2) => {
-              promptApi.current = api2;
-            }}
-          />
+          <Logo />
         </Box>
-        <Box height={1} flexShrink={1} />
+      </Box>
+      <Box paddingLeft={2} paddingRight={2} paddingBottom={1} flexShrink={0}>
+        <Prompt
+          running={false}
+          elapsed={0}
+          escArmed={false}
+          model=""
+          mode={mode}
+          everTyped={everTyped}
+          leaderActive={leaderPending}
+          inputLocked={dialog !== null}
+          maxWidth={75}
+          center
+          onSubmit={handleSubmit}
+          onExit={onExit}
+          onInterrupt={() => {}}
+          onToggleMode={onToggleMode}
+          onTyped={onTyped}
+          onCommandSelect={(cmd) => handleSubmit(cmd)}
+          registerPrompt={(api2) => {
+            promptApi.current = api2;
+          }}
+        />
       </Box>
 
       {dialog?.kind === "sessions" ? (

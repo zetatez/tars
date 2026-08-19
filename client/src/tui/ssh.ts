@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { withSuspended } from "./suspend.js";
 
 export interface SshTarget {
   host: string;
@@ -39,17 +40,6 @@ function shq(s: string): string {
   return "'" + s.replace(/'/g, `'\\''`) + "'";
 }
 
-// 临时关闭 Ink raw mode，跑外部程序后恢复
-async function withRawOff<T>(fn: () => Promise<T>): Promise<T> {
-  const was = process.stdin.isRaw;
-  process.stdin.setRawMode(false);
-  try {
-    return await fn();
-  } finally {
-    if (was) process.stdin.setRawMode(true);
-  }
-}
-
 export interface SshResult {
   code: number;
   stdout: string;
@@ -66,9 +56,9 @@ export function sshExec(t: SshTarget, cmd: string): Promise<SshResult> {
   });
 }
 
-// 交互式 ssh 登录（/ssh），输出直接进终端
+// 交互式 ssh 登录（/ssh），输出直接进终端（可交互输入密码）
 export function sshInteractive(t: SshTarget): Promise<number> {
-  return withRawOff(
+  return withSuspended(
     () =>
       new Promise<number>((resolve) => {
         const child = spawn("ssh", interactiveArgs(t), { stdio: "inherit" });
@@ -80,7 +70,7 @@ export function sshInteractive(t: SshTarget): Promise<number> {
 
 // 服务端执行命令，输出流式进终端（! 命令）
 export function sshRun(t: SshTarget, cmd: string): Promise<number> {
-  return withRawOff(
+  return withSuspended(
     () =>
       new Promise<number>((resolve) => {
         const child = spawn("ssh", nonInteractiveArgs(t, cmd), { stdio: "inherit" });

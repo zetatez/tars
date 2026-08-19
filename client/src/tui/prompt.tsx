@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { execFile } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { theme, charWidth } from "./theme.js";
 import { wrapLines, cursorPos, offsetAtCol, wordStarts, lineSegments, type WrappedLine } from "./text.js";
 import { Autocomplete, isAutocompleteTriggered, type AutocompleteApi, type AutocompleteItem } from "./autocomplete.js";
@@ -350,6 +351,7 @@ export function Prompt({
     }
     if (key.return && !key.shift && !key.meta && !key.ctrl) {
       const text = bufRef.current;
+      appendFileSync("/tmp/tars-ed-dbg.log", `enter: ${JSON.stringify(text)}\n`);
       if (text.trim()) submit(text);
       return;
     }
@@ -436,6 +438,7 @@ export function Prompt({
   useEffect(() => {
     registerPrompt({
       setText(text: string) {
+        appendFileSync("/tmp/tars-ed-dbg.log", `prompt.setText: ${JSON.stringify(text)}\n`);
         mutate(text, text.length, false);
       },
     });
