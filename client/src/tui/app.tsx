@@ -241,6 +241,7 @@ export function TuiApp({
               setPendingPrompt(undefined);
               setView({ type: "home" });
             }}
+            onSessionChange={(id) => setView({ type: "session", id })}
             onExit={quit}
           />
         )}
@@ -526,6 +527,7 @@ function SessionView({
   onTyped,
   onNew,
   onExit,
+  onSessionChange,
 }: {
   api: API;
   sshTarget: SshTarget;
@@ -544,6 +546,7 @@ function SessionView({
   onTyped: () => void;
   onNew: () => void;
   onExit: () => void;
+  onSessionChange: (id: string) => void;
 }) {
   const { stdout } = useStdout();
   const columns = stdout.columns ?? 80;
@@ -633,6 +636,7 @@ function SessionView({
     stopRef.current?.();
     stopRef.current = null;
     setElapsed(0);
+    onSessionChange?.(id);
     api
       .messages(id, 0, 200)
       .then((msgs) => {
@@ -1005,7 +1009,7 @@ function SessionView({
       <Box flexShrink={0} flexDirection="row" gap={1} paddingBottom={0}>
         <Text color={status === "running" ? theme.accent : theme.textMuted}>{status}</Text>
         <Text color={theme.textMuted}>·</Text>
-        <Text color={theme.textMuted}>session id: {sessionId.slice(0, 8)}</Text>
+        <Text color={theme.textMuted}>session id: {sid.slice(0, 8)}</Text>
         <Text color={theme.textMuted}>·</Text>
         <Text color={theme.textMuted}>{messages.length} msgs</Text>
       </Box>

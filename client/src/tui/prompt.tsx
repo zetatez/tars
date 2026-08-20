@@ -513,7 +513,7 @@ export function Prompt({
             {clientUser || "-"}@{clientIp || "?"}
           </Text>
         </Box>
-        <Box flexDirection="row" gap={1} flexShrink={0}>
+        <Box flexDirection="row" gap={1} flexShrink={0} overflowX="hidden">
           <Text color={theme.textMuted}>·</Text>
           <Text color={mode === "plan" ? theme.accent : theme.secondary} bold>
             {mode === "plan" ? "Plan" : "Build"}
