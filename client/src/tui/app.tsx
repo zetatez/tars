@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
-import { appendFileSync } from "node:fs";
 import path from "node:path";
 
 import { API } from "../api.js";
@@ -13,9 +12,9 @@ import { MessageView } from "./messages.js";
 import { Prompt } from "./prompt.js";
 import { DialogSelect, DialogConfirm, DialogHelp, DialogApproval, type SelectOption } from "./dialog.js";
 import { SLASH_COMMANDS } from "./keys.js";
-import { Logo } from "./home.js";
 import { openEditor } from "./editor.js";
 import { setSuspendImpl } from "./suspend.js";
+import { StatusBar } from "./statusbar.js";
 import { runSsh, runVim, runBang } from "./commands.js";
 import { type SshTarget } from "./ssh.js";
 
@@ -57,6 +56,18 @@ function transcriptLines(messages: Message[]): string {
 
 type View = { type: "home" } | { type: "session"; id: string };
 
+// 粗略估算会话已用 token（与 pi/opencode 一致的 char/4 启发式），仅用于底部展示。
+function estimateTokens(messages: Message[]): number {
+  let chars = 0;
+  for (const m of messages) {
+    const c = m.content;
+    if (c?.text) chars += c.text.length;
+    if (c?.tools) for (const t of c.tools) chars += JSON.stringify(t.args ?? "").length + (JSON.stringify(t.result ?? "")).length;
+    if (c?.error) chars += c.error.length;
+  }
+  return Math.round(chars / 4);
+}
+
 export function TuiApp({
   api,
   sessionId,
@@ -85,55 +96,77 @@ export function TuiApp({
   const setModeDirect = (m: "build" | "plan") => setMode(m);
   const markTyped = () => setEverTyped(true);
 
+  // agent server host：从 base-url 推断（状态栏顶部展示）
+  const host = (() => {
+    try {
+      return new URL(api.baseURL).hostname;
+    } catch {
+      return api.baseURL;
+    }
+  })();
+  const clientUser = api.clientUser ?? "";
+
   const quit = () => {
     exit();
     setTimeout(() => process.exit(0), 100);
   };
 
-  if (view.type === "home") {
-    return (
-      <HomeView
-        api={api}
-        sshTarget={sshTarget}
-        mode={mode}
-        onToggleMode={toggleMode}
-        onSetMode={setModeDirect}
-        everTyped={everTyped}
-        onTyped={markTyped}
-        onStart={async (text) => {
-          try {
-            const s = await api.createSession();
-            setPendingPrompt(text);
-            setView({ type: "session", id: s.id });
-          } catch {}
-        }}
-        onResume={(id) => {
-          setPendingPrompt(undefined);
-          setView({ type: "session", id });
-        }}
-        onExit={quit}
-      />
-    );
-  }
   return (
-    <SessionView
-      key={view.id}
-      api={api}
-      sshTarget={sshTarget}
-      sessionId={view.id}
-      initialMessages={initialMessages && view.id === sessionId ? initialMessages : []}
-      initialPrompt={pendingPrompt}
-      mode={mode}
-      onToggleMode={toggleMode}
-      onSetMode={setModeDirect}
-      everTyped={everTyped}
-      onTyped={markTyped}
-      onNew={() => {
-        setPendingPrompt(undefined);
-        setView({ type: "home" });
-      }}
-      onExit={quit}
-    />
+    <Box flexDirection="column" height="100%">
+      <Box flexShrink={0} paddingBottom={0}>
+        <StatusBar
+          api={api}
+          host={host}
+          serverUser={sshTarget.user}
+          clientUser={clientUser}
+          currentSessionId={view.type === "session" ? view.id : undefined}
+        />
+      </Box>
+      <Box flexGrow={1} flexDirection="column" minHeight={0}>
+        {view.type === "home" ? (
+          <HomeView
+            api={api}
+            sshTarget={sshTarget}
+            mode={mode}
+            onToggleMode={toggleMode}
+            onSetMode={setModeDirect}
+            everTyped={everTyped}
+            onTyped={markTyped}
+            onStart={async (text) => {
+              try {
+                const s = await api.createSession();
+                setPendingPrompt(text);
+                setView({ type: "session", id: s.id });
+              } catch {}
+            }}
+            onResume={(id) => {
+              setPendingPrompt(undefined);
+              setView({ type: "session", id });
+            }}
+            onExit={quit}
+          />
+        ) : (
+          <SessionView
+            key={view.id}
+            api={api}
+            sshTarget={sshTarget}
+            sessionId={view.id}
+            initialMessages={initialMessages && view.id === sessionId ? initialMessages : []}
+            initialPrompt={pendingPrompt}
+            mode={mode}
+            onToggleMode={toggleMode}
+            onSetMode={setModeDirect}
+            everTyped={everTyped}
+            onTyped={markTyped}
+            onNew={() => {
+              setPendingPrompt(undefined);
+              setView({ type: "home" });
+            }}
+            onExit={quit}
+          />
+        )}
+      </Box>
+    </Box>
   );
 }
 
@@ -246,7 +279,6 @@ function HomeView({
           break;
         case "editor":
           void openEditor("").then((content) => {
-            appendFileSync("/tmp/tars-ed-dbg.log", `editor resolve: ${JSON.stringify(content)} api=${promptApi.current ? 1 : 0}\n`);
             if (content) promptApi.current?.setText(content);
           });
           break;
@@ -297,11 +329,7 @@ function HomeView({
 
   return (
     <Box flexDirection="column" height="100%">
-      <Box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-        <Box paddingTop={2}>
-          <Logo />
-        </Box>
-      </Box>
+      <Box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} />
       <Box paddingLeft={2} paddingRight={2} paddingBottom={1} flexShrink={0}>
         <Prompt
           running={false}
@@ -312,8 +340,6 @@ function HomeView({
           everTyped={everTyped}
           leaderActive={leaderPending}
           inputLocked={dialog !== null}
-          maxWidth={75}
-          center
           onSubmit={handleSubmit}
           onExit={onExit}
           onInterrupt={() => {}}
@@ -864,6 +890,13 @@ function SessionView({
 
   return (
     <Box flexDirection="column" height="100%" paddingLeft={2} paddingRight={2}>
+      <Box flexShrink={0} flexDirection="row" gap={1} paddingBottom={0}>
+        <Text color={status === "running" ? theme.accent : theme.textMuted}>{status}</Text>
+        <Text color={theme.textMuted}>·</Text>
+        <Text color={theme.textMuted}>session id: {sessionId.slice(0, 8)}</Text>
+        <Text color={theme.textMuted}>·</Text>
+        <Text color={theme.textMuted}>{messages.length} msgs</Text>
+      </Box>
       <Box flexGrow={1} flexDirection="row" minHeight={0}>
         <Box flexGrow={1} flexDirection="column" justifyContent="flex-end">
           {scroll > 0 && end <= 1 ? (
@@ -901,6 +934,7 @@ function SessionView({
         provider={provider}
         mode={mode}
         everTyped={everTyped}
+        tokens={estimateTokens(messages)}
         leaderActive={leaderPending}
         inputLocked={dialogOpen}
         onSubmit={send}

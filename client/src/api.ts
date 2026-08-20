@@ -1,9 +1,23 @@
 import type { Message, Session } from "./types.js";
 
+export interface GlobalSessionEntry {
+  id: string;
+  key_id?: string;
+  cwd?: string;
+  status: string;
+  model?: string;
+  client_user?: string;
+  client_ip?: string;
+  time_updated?: number;
+  mine?: boolean;
+  access?: "rw" | "ro";
+}
+
 export class API {
   constructor(
     readonly baseURL: string,
     readonly key: string,
+    readonly clientUser?: string,
   ) {}
 
   private async req<T>(
@@ -17,6 +31,7 @@ export class API {
       "Authorization": `Bearer ${this.key}`,
       "Content-Type": "application/json",
     };
+    if (this.clientUser) headers["X-Client-User"] = this.clientUser;
     if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
     const resp = await fetch(url, {
       method,
@@ -50,6 +65,9 @@ export class API {
   }
   listSessions(): Promise<{ sessions: Session[] }> {
     return this.req("GET", "/api/v1/session");
+  }
+  globalSessions(limit = 8, offset = 0): Promise<{ sessions: GlobalSessionEntry[]; total: number; limit: number; offset: number }> {
+    return this.req("GET", `/api/v1/sessions?limit=${limit}&offset=${offset}`);
   }
   getSession(id: string): Promise<Session> {
     return this.req("GET", `/api/v1/session/${id}`);

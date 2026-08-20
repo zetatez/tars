@@ -27,6 +27,7 @@ export const KEY_HELP: KeyDesc[] = [
   { group: "Session", keys: ["Esc"], desc: "Interrupt (press twice to confirm)" },
   { group: "Session", keys: ["Ctrl+X"], desc: "Leader: n=new, l=session list, e=editor, q=exit, y=copy, h=help" },
   { group: "Session", keys: ["Ctrl+O"], desc: "Expand / collapse long tool output" },
+  { group: "Session", keys: ["Ctrl+PageDown / Ctrl+PageUp"], desc: "Page global session list in the top status bar" },
   { group: "Session", keys: ["/"], desc: "Commands: new sessions status models agents init themes skills variants mcps copy export rollback delete editor ssh vim help exit" },
   { group: "Session", keys: ["!"], desc: "Run a shell command on the server via ssh" },
   { group: "Session", keys: ["Ctrl+C"], desc: "Exit (when input empty)" },
@@ -34,7 +35,7 @@ export const KEY_HELP: KeyDesc[] = [
 
 export const SLASH_COMMANDS: { name: string; aliases: string[]; desc: string }[] = [
   { name: "new", aliases: ["clear"], desc: "Create a new session" },
-  { name: "sessions", aliases: ["resume", "continue", "ls"], desc: "Switch to another session" },
+  { name: "sessions", aliases: ["session", "resume", "continue", "ls"], desc: "Switch to another session" },
   { name: "status", aliases: [], desc: "Show server & session status" },
   { name: "models", aliases: [], desc: "Pick a model" },
   { name: "agents", aliases: [], desc: "Switch agent (Build / Plan)" },

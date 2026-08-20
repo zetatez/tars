@@ -138,7 +138,39 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	// 增量迁移：会话归属的 client 标识（用户名 + IP），用于全局会话列表标注
+	if err := s.ensureColumn("session", "client_user", "client_user TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("session", "client_ip", "client_ip TEXT"); err != nil {
+		return err
+	}
 	return nil
+}
+
+// ensureColumn 幂等地为表添加列（不存在时才 ALTER TABLE ADD COLUMN）。
+func (s *Store) ensureColumn(table, col, ddl string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == col {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + ddl)
+	return err
 }
 
 func (s *Store) DB() *sql.DB {

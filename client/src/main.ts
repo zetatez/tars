@@ -7,17 +7,20 @@ import type { EventData, Message, ToolCall } from "./types.js";
 
 const BASE_URL = "http://localhost:8899";
 
-function parseGlobalArgs(argv: string[]): { baseURL: string; key: string; rest: string[] } {
+function parseGlobalArgs(argv: string[]): { baseURL: string; key: string; clientUser: string; rest: string[] } {
   let baseURL = process.env.TARS_BASE_URL ?? BASE_URL;
   let key = process.env.TARS_API_KEY ?? "";
+  let clientUser = process.env.TARS_SSH_USER ?? process.env.USER ?? "";
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--base-url" || a === "-u") baseURL = argv[++i] ?? baseURL;
     else if (a === "--key" || a === "-k") key = argv[++i] ?? key;
+    else if (a === "--client-user") clientUser = argv[++i] ?? clientUser;
+    else if (a === "--ssh-user") clientUser = argv[++i] ?? clientUser;
     else rest.push(a);
   }
-  return { baseURL, key, rest };
+  return { baseURL, key, clientUser, rest };
 }
 
 function fail(msg: string): never {
@@ -305,9 +308,9 @@ async function cmdTui(api: API, args: string[]): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { baseURL, key, rest } = parseGlobalArgs(process.argv.slice(2));
+  const { baseURL, key, clientUser, rest } = parseGlobalArgs(process.argv.slice(2));
   if (!key) fail("missing API key (use --key <KEY> or TARS_API_KEY)");
-  const api = new API(baseURL, key);
+  const api = new API(baseURL, key, clientUser);
   const [cmd, ...args] = rest;
   try {
     if (!cmd) {

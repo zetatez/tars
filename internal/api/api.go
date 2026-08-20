@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/keys", s.authAdmin(s.handleCreateKey))
 	mux.HandleFunc("POST /api/v1/session", s.auth(s.handleCreateSession))
 	mux.HandleFunc("GET /api/v1/session", s.auth(s.handleListSessions))
+	mux.HandleFunc("GET /api/v1/sessions", s.auth(s.handleGlobalSessions))
 	mux.HandleFunc("GET /api/v1/session/{id}", s.auth(s.handleGetSession))
 	mux.HandleFunc("PATCH /api/v1/session/{id}", s.auth(s.handleUpdateSession))
 	mux.HandleFunc("DELETE /api/v1/session/{id}", s.auth(s.handleDeleteSession))
@@ -420,14 +422,31 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a, err := s.mgr.Create(ki.KeyID, body.Cwd, body.Model, ki.Role, 0, body.PromptMode)
+	a, err := s.mgr.Create(ki.KeyID, body.Cwd, body.Model, ki.Role, 0, body.PromptMode, r.Header.Get("X-Client-User"), clientIP(r))
 	if err != nil {
 		s.log.Error("create session", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create session failed"})
 		return
 	}
-	s.log.Info("session created", "session_id", a.ID, "key_id", ki.KeyID)
+	s.log.Info("session created", "session_id", a.ID, "key_id", ki.KeyID, "client_user", a.ClientUser, "client_ip", a.ClientIP)
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": a.ID, "cwd": a.Cwd, "model": a.Model})
+}
+
+// clientIP 返回请求来源 IP（去掉端口；保留 X-Forwarded-For 直连场景兜底）。
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if host, _, err := net.SplitHostPort(xff); err == nil {
+			return host
+		}
+		if parts := strings.Split(xff, ","); len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -438,9 +457,46 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.ReadIsolation && ki.Role != auth.RoleAdmin && a.KeyID != ki.KeyID {
 			continue
 		}
-		out = append(out, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": a.Model})
+		out = append(out, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": a.Model, "client_user": a.ClientUser, "client_ip": a.ClientIP})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+}
+
+// handleGlobalSessions 返回全局活跃会话（跨所有 client），按最近活跃排序、可翻页；
+// access 标注当前 key 是否可写（rw/ro）。
+func (s *Server) handleGlobalSessions(w http.ResponseWriter, r *http.Request) {
+	ki := keyInfo(r)
+	limit := 8
+	offset := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	list, total, err := s.mgr.GlobalSessions(limit, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, g := range list {
+		mine := ki.Role == auth.RoleAdmin || ki.KeyID == g.KeyID
+		access := "ro"
+		if mine {
+			access = "rw"
+		}
+		out = append(out, map[string]any{
+			"id": g.ID, "key_id": g.KeyID, "cwd": g.Cwd, "status": g.Status, "model": g.Model,
+			"client_user": g.ClientUser, "client_ip": g.ClientIP, "time_updated": g.TimeUpdated,
+			"mine": mine, "access": access,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": out, "total": total, "limit": limit, "offset": offset})
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
@@ -453,7 +509,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	provider, model := s.resolveSessionModel(a.Model)
-	writeJSON(w, http.StatusOK, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": model, "provider": provider})
+	writeJSON(w, http.StatusOK, map[string]any{"id": a.ID, "key_id": a.KeyID, "cwd": a.Cwd, "status": a.Status, "model": model, "provider": provider, "client_user": a.ClientUser, "client_ip": a.ClientIP})
 }
 
 // resolveSessionModel 返回会话生效的 provider 名与 model（model 为空时用后端默认）

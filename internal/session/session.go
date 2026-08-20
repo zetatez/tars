@@ -48,6 +48,8 @@ type Actor struct {
 	Status     string
 	Role       string
 	Depth      int
+	ClientUser string // 创建该会话的 client 用户名
+	ClientIP   string // 创建该会话的 client IP
 	promptMode string
 
 	agent *agent.Agent
@@ -100,7 +102,7 @@ func NewManager(db *sql.DB, log *slog.Logger, defaultCwd string, ag *agent.Agent
 	}
 }
 
-func (m *Manager) Create(keyID, cwd, model, role string, depth int, promptMode string) (*Actor, error) {
+func (m *Manager) Create(keyID, cwd, model, role string, depth int, promptMode, clientUser, clientIP string) (*Actor, error) {
 	if cwd == "" {
 		cwd = m.defaultCwd
 	}
@@ -110,9 +112,9 @@ func (m *Manager) Create(keyID, cwd, model, role string, depth int, promptMode s
 	id := uuid.NewString()
 	now := time.Now().Unix()
 	if _, err := m.db.Exec(
-		`INSERT INTO session (id, key_id, cwd, env, title, status, model, time_created, time_updated)
-		 VALUES (?, ?, ?, NULL, NULL, 'idle', ?, ?, ?)`,
-		id, keyID, cwd, model, now, now,
+		`INSERT INTO session (id, key_id, cwd, env, title, status, model, client_user, client_ip, time_created, time_updated)
+		 VALUES (?, ?, ?, NULL, NULL, 'idle', ?, ?, ?, ?, ?)`,
+		id, keyID, cwd, model, clientUser, clientIP, now, now,
 	); err != nil {
 		return nil, err
 	}
@@ -124,6 +126,8 @@ func (m *Manager) Create(keyID, cwd, model, role string, depth int, promptMode s
 		Status:     "idle",
 		Role:       role,
 		Depth:      depth,
+		ClientUser: clientUser,
+		ClientIP:   clientIP,
 		promptMode: promptMode,
 		agent:      m.agent,
 		ch:         make(chan PromptReq, 8),
@@ -227,8 +231,8 @@ func (m *Manager) resume(id string) (*Actor, bool) {
 	if m.db == nil {
 		return nil, false
 	}
-	var keyID, cwd, model string
-	if err := m.db.QueryRow(`SELECT key_id, cwd, model FROM session WHERE id = ?`, id).Scan(&keyID, &cwd, &model); err != nil {
+	var keyID, cwd, model, clientUser, clientIP string
+	if err := m.db.QueryRow(`SELECT key_id, cwd, model, client_user, client_ip FROM session WHERE id = ?`, id).Scan(&keyID, &cwd, &model, &clientUser, &clientIP); err != nil {
 		return nil, false
 	}
 	role := "user"
@@ -241,6 +245,8 @@ func (m *Manager) resume(id string) (*Actor, bool) {
 		Model:      model,
 		Status:     "idle", // 重启后无进行中 turn
 		Role:       role,
+		ClientUser: clientUser,
+		ClientIP:   clientIP,
 		promptMode: m.promptMode,
 		agent:      m.agent,
 		ch:         make(chan PromptReq, 8),
@@ -282,6 +288,47 @@ func (m *Manager) List() []*Actor {
 	return out
 }
 
+// GlobalSession 描述一个全局会话（跨所有 client），用于顶部状态栏列表。
+type GlobalSession struct {
+	ID          string `json:"id"`
+	KeyID       string `json:"key_id"`
+	Cwd         string `json:"cwd"`
+	Status      string `json:"status"`
+	Model       string `json:"model"`
+	ClientUser  string `json:"client_user"`
+	ClientIP    string `json:"client_ip"`
+	TimeUpdated int64  `json:"time_updated"`
+}
+
+// GlobalSessions 按最近活跃返回全局会话列表（分页）。limit<=0 时取全部。
+func (m *Manager) GlobalSessions(limit, offset int) ([]GlobalSession, int, error) {
+	var total int
+	if err := m.db.QueryRow(`SELECT COUNT(*) FROM session`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	q := `SELECT id, key_id, cwd, status, model, COALESCE(client_user,''), COALESCE(client_ip,''), time_updated
+	      FROM session ORDER BY time_updated DESC, id`
+	args := []any{}
+	if limit > 0 {
+		q += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := m.db.Query(q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]GlobalSession, 0, limit)
+	for rows.Next() {
+		var g GlobalSession
+		if err := rows.Scan(&g.ID, &g.KeyID, &g.Cwd, &g.Status, &g.Model, &g.ClientUser, &g.ClientIP, &g.TimeUpdated); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, g)
+	}
+	return out, total, rows.Err()
+}
+
 func (m *Manager) Delete(id string) error {
 	a, ok := m.Get(id)
 	if !ok {
@@ -314,7 +361,7 @@ func (m *Manager) RunSync(keyID, cwd, model, role, text string, depth int) (stri
 			return "", err
 		}
 	}
-	a, err := m.Create(keyID, cwd, model, role, depth, "")
+	a, err := m.Create(keyID, cwd, model, role, depth, "", "", "")
 	if err != nil {
 		return "", err
 	}
@@ -438,8 +485,10 @@ func (a *Actor) SetModel(model string) error {
 	_, err := a.db.Exec(`UPDATE session SET model = ?, time_updated = ? WHERE id = ?`, model, time.Now().Unix(), a.ID)
 	return err
 }
-func (a *Actor) SessionRole() string { return a.Role }
-func (a *Actor) SessionDepth() int   { return a.Depth }
+func (a *Actor) SessionRole() string       { return a.Role }
+func (a *Actor) SessionDepth() int         { return a.Depth }
+func (a *Actor) SessionClientUser() string { return a.ClientUser }
+func (a *Actor) SessionClientIP() string   { return a.ClientIP }
 func (a *Actor) Append(role string, content any) {
 	a.appendMessage(role, content)
 }

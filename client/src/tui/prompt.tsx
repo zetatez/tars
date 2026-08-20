@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { execFile } from "node:child_process";
-import { appendFileSync } from "node:fs";
 import { theme, charWidth } from "./theme.js";
 import { wrapLines, cursorPos, offsetAtCol, wordStarts, lineSegments, type WrappedLine } from "./text.js";
 import { Autocomplete, isAutocompleteTriggered, type AutocompleteApi, type AutocompleteItem } from "./autocomplete.js";
@@ -38,6 +37,7 @@ export interface PromptProps {
   inputLocked: boolean;
   maxWidth?: number;
   center?: boolean;
+  tokens?: number;
   onSubmit: (text: string) => void;
   onExit: () => void;
   onInterrupt: () => void;
@@ -59,6 +59,7 @@ export function Prompt({
   inputLocked,
   maxWidth,
   center,
+  tokens,
   onSubmit,
   onExit,
   onInterrupt,
@@ -351,7 +352,6 @@ export function Prompt({
     }
     if (key.return && !key.shift && !key.meta && !key.ctrl) {
       const text = bufRef.current;
-      appendFileSync("/tmp/tars-ed-dbg.log", `enter: ${JSON.stringify(text)}\n`);
       if (text.trim()) submit(text);
       return;
     }
@@ -438,7 +438,6 @@ export function Prompt({
   useEffect(() => {
     registerPrompt({
       setText(text: string) {
-        appendFileSync("/tmp/tars-ed-dbg.log", `prompt.setText: ${JSON.stringify(text)}\n`);
         mutate(text, text.length, false);
       },
     });
@@ -500,9 +499,12 @@ export function Prompt({
           ) : null}
         </Box>
         <Box flexDirection="row" gap={1} flexShrink={0}>
+          <Text color={theme.textMuted}>·</Text>
           <Text color={mode === "plan" ? theme.accent : theme.secondary} bold>
             {mode === "plan" ? "Plan" : "Build"}
           </Text>
+          <Text color={theme.textMuted}>·</Text>
+          <Text color={theme.textMuted}>{tokens != null ? `~${tokens} tokens` : "-"}</Text>
           <Text color={theme.textMuted}>·</Text>
           <Text color={theme.text}>
             {provider ? `${provider}:` : ""}
