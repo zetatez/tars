@@ -2,8 +2,9 @@
 # 便捷启动 tars CLI（后端未运行时自动构建并后台启动）
 # 用法: ./tars-cli.sh [--base-url URL] [--key KEY] <命令> ...
 # 说明: 自动定位 client 目录；dist 缺失或源码更新时自动构建；参数原样透传。
-#       后端健康检查失败时，自动 go build 并在项目内 dev-data/ 下以后台方式拉起服务
-#       （PID 写入 dev-data/tars.pid，退出 CLI 不停止后端）。
+#       后端健康检查失败时，自动 go build 并安装到标准目录 /opt/tars/ 后后台启动
+#       （PID 写入 /opt/tars/tars.pid，退出 CLI 不停止后端）。
+#       写 /opt/tars/ 需要 sudo（与 `make install` 一致）。
 #       API Key 优先级: --key 参数 > TARS_API_KEY 环境变量 > 下方 DEFAULT_KEY。
 set -euo pipefail
 
@@ -52,7 +53,8 @@ probe() {
 }
 
 if ! probe; then
-  BIN="$REPO_ROOT/build/tars"
+  TARS_DIR="/opt/tars"
+  BIN="$TARS_DIR/bin/tars"
   NEED_BUILD=0
   [ -f "$BIN" ] || NEED_BUILD=1
   if [ "$NEED_BUILD" -eq 0 ] && [ -n "$(find "$REPO_ROOT/cmd" "$REPO_ROOT/internal" -name '*.go' -newer "$BIN" 2>/dev/null | head -1)" ]; then
@@ -61,28 +63,29 @@ if ! probe; then
   if [ "$NEED_BUILD" -eq 1 ]; then
     echo "正在构建 tars 后端 ..." >&2
     (cd "$REPO_ROOT" && go build -trimpath -o build/tars ./cmd/tars)
+    echo "安装到 $BIN ..." >&2
+    sudo install -Dm755 "$REPO_ROOT/build/tars" "$BIN"
   fi
 
-  DEV_DIR="$REPO_ROOT/dev-data"
-  mkdir -p "$DEV_DIR/data" "$DEV_DIR/work"
-  CFG="$DEV_DIR/config.yaml"
+  sudo mkdir -p "$TARS_DIR/data" "$TARS_DIR/work"
+  CFG="$TARS_DIR/config.yaml"
   if [ ! -f "$CFG" ]; then
     PORT="$(node -e "const u=new URL('$BASE_URL');process.stdout.write(u.port||(u.protocol==='https:'?'443':'80'))")"
-    cp "$REPO_ROOT/config.example.yaml" "$CFG"
-    sed -i \
+    sudo cp "$REPO_ROOT/config.example.yaml" "$CFG"
+    sudo sed -i \
       -e "s|^listen:.*|listen: \":$PORT\"|" \
-      -e "s|^data_dir:.*|data_dir: $DEV_DIR/data|" \
-      -e "s|^default_cwd:.*|default_cwd: $DEV_DIR/work|" \
       -e "s|^admin_key:.*|admin_key: \"$DEFAULT_KEY\"|" \
       "$CFG"
+  elif grep -q '^admin_key: "00000000-0000-0000-0000-000000000000_' "$CFG"; then
+    # 占位 admin_key 时注入默认 key，保证脚本自动拉起后可直接访问
+    sudo sed -i "s|^admin_key:.*|admin_key: \"$DEFAULT_KEY\"|" "$CFG"
   fi
 
-  if [ -f "$DEV_DIR/tars.pid" ] && kill -0 "$(cat "$DEV_DIR/tars.pid")" 2>/dev/null; then
+  if [ -f "$TARS_DIR/tars.pid" ] && kill -0 "$(cat "$TARS_DIR/tars.pid")" 2>/dev/null; then
     :
   else
     echo "后端未运行，正在自动启动 tars 服务（$BASE_URL）..." >&2
-    nohup "$BIN" --config "$CFG" >>"$DEV_DIR/tars.log" 2>&1 &
-    echo $! >"$DEV_DIR/tars.pid"
+    sudo sh -c "nohup $BIN --config $CFG >>$TARS_DIR/tars.log 2>&1 & echo \$! >$TARS_DIR/tars.pid"
   fi
 
   for _ in $(seq 1 30); do
@@ -90,7 +93,7 @@ if ! probe; then
     sleep 0.5
   done
   if ! probe; then
-    echo "error: 后端启动失败，查看 $DEV_DIR/tars.log" >&2
+    echo "error: 后端启动失败，查看 $TARS_DIR/tars.log" >&2
     exit 1
   fi
 fi
