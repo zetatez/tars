@@ -81,11 +81,29 @@ if ! probe; then
     sudo sed -i "s|^admin_key:.*|admin_key: \"$DEFAULT_KEY\"|" "$CFG"
   fi
 
+  # 检测 config 中引用的环境变量（${VAR} 形式），检查是否已设置且非空。
+  # 已设置的会显式传递给 sudo 启动的后端（sudo 默认不继承当前用户环境）。
+  NEED_VARS=$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$CFG" 2>/dev/null | tr -d '${}' | sort -u)
+  ENV_ARGS=()
+  MISSING_VARS=""
+  for v in $NEED_VARS; do
+    eval "val=\${$v-}"
+    if [ -z "$val" ]; then
+      MISSING_VARS="$MISSING_VARS $v"
+    else
+      ENV_ARGS+=("$v=$val")
+    fi
+  done
+  if [ -n "$MISSING_VARS" ]; then
+    echo "警告: 以下环境变量未设置或为空，对应 provider 将不可用:$(echo $MISSING_VARS)" >&2
+  fi
+
   if [ -f "$TARS_DIR/tars.pid" ] && kill -0 "$(cat "$TARS_DIR/tars.pid")" 2>/dev/null; then
     :
   else
     echo "后端未运行，正在自动启动 tars 服务（$BASE_URL）..." >&2
-    sudo sh -c "nohup $BIN --config $CFG >>$TARS_DIR/tars.log 2>&1 & echo \$! >$TARS_DIR/tars.pid"
+    # 用 env 显式传入已设置的 API key
+    sudo env "${ENV_ARGS[@]}" sh -c "nohup $BIN --config $CFG >>$TARS_DIR/tars.log 2>&1 & echo \$! >$TARS_DIR/tars.pid"
   fi
 
   for _ in $(seq 1 30); do

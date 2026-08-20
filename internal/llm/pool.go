@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand"
 	"sort"
 	"sync"
@@ -132,6 +133,7 @@ func (p *Pool) Chat(ctx context.Context, req ChatRequest) (*Result, error) {
 			return nil, err
 		}
 		lastErr = err
+		slog.Warn("llm provider failed", "provider", e.provider.Name(), "err", err)
 		var unavail *UnavailableError
 		if errors.As(err, &unavail) {
 			// provider 不可用（限流/配额/鉴权/5xx/连接失败）：立即标记并快速 failover，不等待退避

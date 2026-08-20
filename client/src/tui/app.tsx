@@ -2,12 +2,14 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
+import { lookup } from "node:dns/promises";
 import path from "node:path";
 
 import { API } from "../api.js";
 import { streamEvents } from "../sse.js";
 import type { EventData, Message } from "../types.js";
-import { theme } from "./theme.js";
+import { theme, charWidth } from "./theme.js";
 import { MessageView } from "./messages.js";
 import { Prompt } from "./prompt.js";
 import { DialogSelect, DialogConfirm, DialogHelp, DialogApproval, type SelectOption } from "./dialog.js";
@@ -19,6 +21,18 @@ import { runSsh, runVim, runBang } from "./commands.js";
 import { type SshTarget } from "./ssh.js";
 
 const PAGE = 8;
+
+async function resolveIp(host: string): Promise<string> {
+  if (!host) return host;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":")) return host;
+  if (host === "localhost") return "127.0.0.1";
+  try {
+    const { address } = await lookup(host, { family: 4 });
+    return address;
+  } catch {
+    return host;
+  }
+}
 
 function writeClipboard(text: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -68,6 +82,49 @@ function estimateTokens(messages: Message[]): number {
   return Math.round(chars / 4);
 }
 
+// 估算一段 markdown 文本渲染后占用的行数（近似，用于消息区滚动窗口裁剪）。
+function estimateTextLines(text: string, contentWidth: number): number {
+  if (!text) return 0;
+  let lines = 0;
+  for (const raw of text.replace(/\r\n/g, "\n").split("\n")) {
+    if (/^\s*$/.test(raw)) continue;
+    const seg = raw.trim();
+    // 代码块：行数 + 边框上下各 1
+    if (/^```/.test(raw)) {
+      lines += 1; // 边框或语言行
+      continue;
+    }
+    if (/^\s*\|/.test(raw) && /^\s*\|[\s:|-]+\|\s*$/.test(raw)) continue; // 表格分隔行
+    const w = charWidth(seg);
+    lines += Math.max(1, Math.ceil(w / Math.max(1, contentWidth)));
+  }
+  return lines + 2; // 顶部边框 + 底部边框（近似代码块/块间距）
+}
+
+// 估算一条消息渲染后占用的行数（近似）。
+function estimateMessageLines(m: Message, contentWidth: number): number {
+  const c = m.content;
+  let lines = 1; // marginTop
+  if (m.role === "user") {
+    lines += 2; // paddingY
+    lines += estimateTextLines(c.text ?? "", contentWidth);
+    lines += (c.files?.length ?? 0);
+    return lines;
+  }
+  if (c.error) {
+    lines += 2 + 1; // paddingY + 错误文本行
+    return lines;
+  }
+  for (const _t of c.tools ?? []) {
+    lines += 2; // paddingY
+    lines += 2; // 标题行 + 状态行
+    lines += 8; // 折叠显示的行数上限（COLLAPSE_LINES=10，取中）
+    lines += 1; // marginTop
+  }
+  if (c.text) lines += estimateTextLines(c.text, contentWidth);
+  return lines;
+}
+
 export function TuiApp({
   api,
   sessionId,
@@ -83,6 +140,7 @@ export function TuiApp({
 }) {
   const { exit, suspendTerminal } = useApp();
   const [view, setView] = useState<View>(sessionId ? { type: "session", id: sessionId } : { type: "home" });
+  const [statusBarH, setStatusBarH] = useState<number | undefined>(undefined);
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>(initialPrompt);
   const [mode, setMode] = useState<"build" | "plan">("build");
   const [everTyped, setEverTyped] = useState(false);
@@ -96,7 +154,7 @@ export function TuiApp({
   const setModeDirect = (m: "build" | "plan") => setMode(m);
   const markTyped = () => setEverTyped(true);
 
-  // agent server host：从 base-url 推断（状态栏顶部展示）
+  // agent server host：从 base-url 推断（footer 展示）
   const host = (() => {
     try {
       return new URL(api.baseURL).hostname;
@@ -105,6 +163,20 @@ export function TuiApp({
     }
   })();
   const clientUser = api.clientUser ?? "";
+  const serverUser = sshTarget.user ?? "";
+
+  const [serverIp, setServerIp] = useState(host);
+  const [clientIp, setClientIp] = useState("");
+  useEffect(() => {
+    let alive = true;
+    void resolveIp(host).then((ip) => alive && setServerIp(ip));
+    return () => { alive = false; };
+  }, [host]);
+  useEffect(() => {
+    let alive = true;
+    void resolveIp(hostname()).then((ip) => alive && setClientIp(ip));
+    return () => { alive = false; };
+  }, []);
 
   const quit = () => {
     exit();
@@ -113,13 +185,11 @@ export function TuiApp({
 
   return (
     <Box flexDirection="column" height="100%">
-      <Box flexShrink={0} paddingBottom={0}>
+      <Box flexShrink={0} paddingBottom={1}>
         <StatusBar
           api={api}
-          host={host}
-          serverUser={sshTarget.user}
-          clientUser={clientUser}
           currentSessionId={view.type === "session" ? view.id : undefined}
+          onHeightChange={setStatusBarH}
         />
       </Box>
       <Box flexGrow={1} flexDirection="column" minHeight={0}>
@@ -128,6 +198,10 @@ export function TuiApp({
             api={api}
             sshTarget={sshTarget}
             mode={mode}
+            serverUser={serverUser}
+            serverIp={serverIp}
+            clientUser={clientUser}
+            clientIp={clientIp}
             onToggleMode={toggleMode}
             onSetMode={setModeDirect}
             everTyped={everTyped}
@@ -151,9 +225,14 @@ export function TuiApp({
             api={api}
             sshTarget={sshTarget}
             sessionId={view.id}
+            statusBarHeight={statusBarH}
             initialMessages={initialMessages && view.id === sessionId ? initialMessages : []}
             initialPrompt={pendingPrompt}
             mode={mode}
+            serverUser={serverUser}
+            serverIp={serverIp}
+            clientUser={clientUser}
+            clientIp={clientIp}
             onToggleMode={toggleMode}
             onSetMode={setModeDirect}
             everTyped={everTyped}
@@ -174,6 +253,10 @@ function HomeView({
   api,
   sshTarget,
   mode,
+  serverUser,
+  serverIp,
+  clientUser,
+  clientIp,
   onToggleMode,
   onSetMode,
   everTyped,
@@ -185,6 +268,10 @@ function HomeView({
   api: API;
   sshTarget: SshTarget;
   mode: "build" | "plan";
+  serverUser: string;
+  serverIp: string;
+  clientUser: string;
+  clientIp: string;
   onToggleMode: () => void;
   onSetMode: (m: "build" | "plan") => void;
   everTyped: boolean;
@@ -337,6 +424,10 @@ function HomeView({
           escArmed={false}
           model=""
           mode={mode}
+          serverUser={serverUser}
+          serverIp={serverIp}
+          clientUser={clientUser}
+          clientIp={clientIp}
           everTyped={everTyped}
           leaderActive={leaderPending}
           inputLocked={dialog !== null}
@@ -421,9 +512,14 @@ function SessionView({
   api,
   sshTarget,
   sessionId,
+  statusBarHeight,
   initialMessages,
   initialPrompt,
   mode,
+  serverUser,
+  serverIp,
+  clientUser,
+  clientIp,
   onToggleMode,
   onSetMode,
   everTyped,
@@ -434,9 +530,14 @@ function SessionView({
   api: API;
   sshTarget: SshTarget;
   sessionId: string;
+  statusBarHeight?: number;
   initialMessages: Message[];
   initialPrompt?: string;
   mode: "build" | "plan";
+  serverUser: string;
+  serverIp: string;
+  clientUser: string;
+  clientIp: string;
   onToggleMode: () => void;
   onSetMode: (m: "build" | "plan") => void;
   everTyped: boolean;
@@ -447,7 +548,8 @@ function SessionView({
   const { stdout } = useStdout();
   const columns = stdout.columns ?? 80;
   const rows = stdout.rows ?? 24;
-  const viewH = Math.max(5, rows - 8);
+  // 消息区可视高度：终端行数扣除顶部状态栏、session header、底部输入区（约 5 行）。
+  const viewH = Math.max(5, rows - (statusBarHeight ?? 10) - 6);
 
   const [sid, setSid] = useState(sessionId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
@@ -480,8 +582,18 @@ function SessionView({
 
   const viewBottom = frozenRef.current === null ? messages.length : frozenRef.current;
   const end = Math.max(0, viewBottom - scroll);
-  const start = Math.max(0, end - 60);
-  const visible = messages.slice(start, end);
+  // 从底部向上累计每条消息的估算行数，只保留能放进可视区域的消息。
+  const contentWidth = Math.max(20, columns - 8);
+  const visible: Message[] = [];
+  {
+    let used = 0;
+    for (let i = end - 1; i >= 0; i--) {
+      const lines = estimateMessageLines(messages[i], contentWidth);
+      if (used + lines > viewH && visible.length > 0) break;
+      visible.unshift(messages[i]);
+      used += lines;
+    }
+  }
   const dialogOpen = dialog !== null || approvals.length > 0;
 
   const showToast = useCallback((text: string, kind: "info" | "error" | "warning" = "info") => {
@@ -898,7 +1010,7 @@ function SessionView({
         <Text color={theme.textMuted}>{messages.length} msgs</Text>
       </Box>
       <Box flexGrow={1} flexDirection="row" minHeight={0}>
-        <Box flexGrow={1} flexDirection="column" justifyContent="flex-end">
+        <Box height={viewH} flexDirection="column" justifyContent="flex-end" minHeight={0} overflowY="hidden">
           {scroll > 0 && end <= 1 ? (
             <Text color={theme.textMuted}>— 已到顶部 —</Text>
           ) : null}
@@ -933,6 +1045,10 @@ function SessionView({
         model={model}
         provider={provider}
         mode={mode}
+        serverUser={serverUser}
+        serverIp={serverIp}
+        clientUser={clientUser}
+        clientIp={clientIp}
         everTyped={everTyped}
         tokens={estimateTokens(messages)}
         leaderActive={leaderPending}

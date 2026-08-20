@@ -32,6 +32,10 @@ export interface PromptProps {
   model: string;
   provider?: string;
   mode: "build" | "plan";
+  serverUser: string;
+  serverIp: string;
+  clientUser: string;
+  clientIp: string;
   everTyped: boolean;
   leaderActive: boolean;
   inputLocked: boolean;
@@ -54,6 +58,10 @@ export function Prompt({
   model,
   provider,
   mode,
+  serverUser,
+  serverIp,
+  clientUser,
+  clientIp,
   everTyped,
   leaderActive,
   inputLocked,
@@ -483,20 +491,27 @@ export function Prompt({
           )}
         </Box>
       </Box>
+      {running ? (
+        <Box flexDirection="row" gap={1} marginTop={1} paddingX={1}>
+          <Text color={theme.accent}>{SPIN_FRAMES[spinnerFrame % SPIN_FRAMES.length]}</Text>
+          <Text color={theme.text}>Running… {elapsed}s</Text>
+          <Text>
+            esc{" "}
+            <Text color={escArmed ? theme.accent : theme.textMuted}>
+              {escArmed ? "again to interrupt" : "interrupt"}
+            </Text>
+          </Text>
+        </Box>
+      ) : null}
       <Box flexDirection="row" justifyContent="space-between" marginTop={1} paddingX={1}>
-        <Box flexDirection="row" gap={1} flexShrink={1}>
-          {running ? (
-            <>
-              <Text color={theme.accent}>{SPIN_FRAMES[spinnerFrame % SPIN_FRAMES.length]}</Text>
-              <Text color={theme.text}>Running… {elapsed}s</Text>
-              <Text>
-                esc{" "}
-                <Text color={escArmed ? theme.accent : theme.textMuted}>
-                  {escArmed ? "again to interrupt" : "interrupt"}
-                </Text>
-              </Text>
-            </>
-          ) : null}
+        <Box flexDirection="row" gap={1} flexShrink={1} overflowX="hidden">
+          <Text color={theme.accent} wrap="truncate">
+            {serverUser || "-"}@{serverIp}
+          </Text>
+          <Text color={theme.textMuted}>→</Text>
+          <Text color={theme.textMuted} wrap="truncate">
+            {clientUser || "-"}@{clientIp || "?"}
+          </Text>
         </Box>
         <Box flexDirection="row" gap={1} flexShrink={0}>
           <Text color={theme.textMuted}>·</Text>
