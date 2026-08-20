@@ -3,12 +3,11 @@ import { Box, Text, useBoxMetrics } from "ink";
 import { theme } from "./theme.js";
 
 interface Props {
-  currentSessionId?: string;
   onHeightChange?: (h: number) => void;
 }
 
-// 顶部状态栏：当前会话信息（速度、id）。会话切换通过 Ctrl+X l/r 的会话对话框完成。
-export function StatusBar({ currentSessionId, onHeightChange }: Props) {
+// 顶部状态栏：应用标题 + NORM 模式快捷操作提示。会话切换通过 NORM 模式 z 键的搜索面板完成。
+export function StatusBar({ onHeightChange }: Props) {
   const barRef = useRef(null);
   const { height: barH, hasMeasured } = useBoxMetrics(barRef);
 
@@ -21,14 +20,6 @@ export function StatusBar({ currentSessionId, onHeightChange }: Props) {
       <Text color={theme.text} bold>
         TARS
       </Text>
-      {currentSessionId ? (
-        <>
-          <Text color={theme.textMuted}>·</Text>
-          <Text color={theme.accent}>session {currentSessionId.slice(0, 8)}</Text>
-          <Text color={theme.textMuted}>·</Text>
-          <Text color={theme.dim}>Ctrl+X l/r 切换</Text>
-        </>
-      ) : null}
     </Box>
   );
 }

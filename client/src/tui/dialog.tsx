@@ -358,6 +358,8 @@ export function SessionSwitcher({
     return lines.slice(-8);
   }, [preview]);
 
+  const previewWidth = Math.max(10, Math.round(cols * 0.55) - 2);
+
   return (
     <DialogFrame title="Switch session (type to search · ↑↓ move · enter switch · esc close)">
       <Box flexDirection="row" paddingLeft={1} paddingRight={1} paddingTop={1}>
@@ -394,7 +396,7 @@ export function SessionSwitcher({
             <Text color={theme.dim}>（空会话）</Text>
           ) : (
             previewLines.map((line, i) => (
-              <Text key={i} color={theme.textMuted} wrap="wrap">
+              <Text key={i} color={theme.textMuted} wrap="truncate">
                 {line}
               </Text>
             ))

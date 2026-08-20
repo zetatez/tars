@@ -186,10 +186,7 @@ export function TuiApp({
   return (
     <Box flexDirection="column" height="100%">
       <Box flexShrink={0} paddingBottom={1}>
-        <StatusBar
-          currentSessionId={view.type === "session" ? view.id : undefined}
-          onHeightChange={setStatusBarH}
-        />
+        <StatusBar onHeightChange={setStatusBarH} />
       </Box>
       <Box flexGrow={1} flexDirection="column" minHeight={0}>
         {view.type === "home" ? (
@@ -674,6 +671,7 @@ function SessionView({
 
   const send = useCallback(
     (text: string) => {
+      process.stderr.write(`[send] ${JSON.stringify(text)}\n`);
       const trimmed = text.trim();
       if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
         onExit();
@@ -1105,7 +1103,8 @@ function SessionView({
         serverIp={serverIp}
         clientUser={clientUser}
         clientIp={clientIp}
-        sessionInfo={`${status} · session id: ${sid.slice(0, 8)} · ${messages.length} msgs`}
+        sessionInfo={`session id: ${sid.slice(0, 8)} · ${messages.length} msgs`}
+        tokens={estimateTokens(messages)}
         everTyped={everTyped}
         leaderActive={leaderPending}
         leaderHint="n=new · l/r=sessions · e=editor · q=exit · y=copy · h=help"

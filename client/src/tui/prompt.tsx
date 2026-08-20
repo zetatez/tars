@@ -303,6 +303,19 @@ export function Prompt({
   useInput((input, key) => {
     if (inputLocked || leaderActive) return;
 
+    // 终端可能把 "文本+回车" 合并为单个 input（快速输入/粘贴）。拆分开：先插入文本，再按回车处理。
+    if (input.includes("\r") || input.includes("\n")) {
+      const idx = input.search(/[\r\n]/);
+      const textPart = input.slice(0, idx);
+      if (textPart) insert(textPart);
+      if (input[idx] === "\r" && !key.shift) {
+        const candidate = (textPart || bufRef.current).trim();
+        if (candidate) submit(candidate);
+        return;
+      }
+      return;
+    }
+
     // ---- vim norm 模式 ----
     if (vimMode === "norm") {
       const pk = pendingRef2.current;
@@ -601,63 +614,31 @@ export function Prompt({
 
   const promptBox = (
     <Box width={boxWidth} flexDirection="column" flexShrink={0}>
-      <Box flexDirection="row" gap={1} marginTop={0} paddingX={1} minHeight={1}>
-        {running ? (
-          <Text color={theme.accent}>{SPIN_FRAMES[spinnerFrame % SPIN_FRAMES.length]}</Text>
-        ) : (
-          <Text color={theme.textMuted}>⠂</Text>
-        )}
-        <Text color={running ? theme.text : theme.textMuted}>
-          {running ? `Running… ${elapsed}s` : "idle"}
-        </Text>
-        {running ? (
-          <Text>
-            esc{" "}
-            <Text color={escArmed ? theme.accent : theme.textMuted}>
-              {escArmed ? "again to interrupt" : "interrupt"}
-            </Text>
-          </Text>
-        ) : null}
-      </Box>
-      <Box flexDirection="row" justifyContent="space-between" marginTop={0} paddingX={1}>
+      <Box flexDirection="row" justifyContent="space-between" marginTop={1} paddingX={1}>
         <Box flexDirection="row" gap={1} flexShrink={1} overflowX="hidden">
-          <Text color={theme.accent} wrap="truncate">
-            {serverUser || "-"}@{serverIp}
-          </Text>
-          <Text color={theme.textMuted}>→</Text>
-          <Text color={theme.textMuted} wrap="truncate">
-            {clientUser || "-"}@{clientIp || "?"}
-          </Text>
-        </Box>
-        <Box flexDirection="row" gap={1} flexShrink={0} overflowX="hidden">
-          <Text color={theme.textMuted}>·</Text>
-          <Text color={mode === "plan" ? theme.accent : theme.secondary} bold>
+          <Text color={theme.dim}>·</Text>
+          <Text color={mode === "plan" ? theme.success : theme.secondary} bold>
             {mode === "plan" ? "Plan" : "Build"}
           </Text>
-          <Text color={theme.textMuted}>·</Text>
-          <Text color={theme.textMuted}>{tokens != null ? `~${tokens} tokens` : "-"}</Text>
-          <Text color={theme.textMuted}>·</Text>
-          <Text color={theme.text}>
+          <Text color={theme.dim}>·</Text>
+          <Text color={theme.dim}>{tokens != null ? `~${tokens} tokens` : "-"}</Text>
+          <Text color={theme.dim}>·</Text>
+          <Text color={theme.dim}>
             {provider ? `${provider}:` : ""}
             {model || "tars"}
           </Text>
         </Box>
+        <Box flexDirection="row" gap={1} flexShrink={0} overflowX="hidden">
+          <Text color={theme.dim} wrap="truncate">
+            {serverUser || "-"}@{serverIp}
+          </Text>
+          <Text color={theme.dim}>→</Text>
+          <Text color={theme.dim} wrap="truncate">
+            {clientUser || "-"}@{clientIp || "?"}
+          </Text>
+        </Box>
       </Box>
       <Box flexDirection="row" alignItems="center" gap={1}>
-        <Box
-          flexShrink={0}
-          backgroundColor={mode === "plan" ? theme.accent : theme.secondary}
-          paddingX={1}
-        >
-          <Text color={theme.background} bold>
-            {mode === "plan" ? "P" : "B"}
-          </Text>
-        </Box>
-        <Box flexShrink={0} backgroundColor={vimMode === "norm" ? theme.warning : theme.darkGray} paddingX={1}>
-          <Text color={vimMode === "norm" ? "#000000" : theme.text} bold>
-            {vimMode === "norm" ? "NORM" : "EDIT"}
-          </Text>
-        </Box>
         <Box flexGrow={1} flexDirection="column" borderStyle="single" borderColor={borderColor} backgroundColor={theme.inputBg}>
         <Box flexDirection="column" paddingX={1} paddingY={0}>
           {buf === "" && !everTyped ? (
@@ -691,6 +672,11 @@ export function Prompt({
           )}
         </Box>
         </Box>
+        <Box flexShrink={0} alignItems="center" backgroundColor={vimMode === "norm" ? theme.warning : theme.darkGray} paddingX={1}>
+          <Text color={vimMode === "norm" ? "#000000" : theme.text} bold>
+            {vimMode === "norm" ? "N" : "E"}
+          </Text>
+        </Box>
       </Box>
     </Box>
   );
@@ -704,17 +690,29 @@ export function Prompt({
           </Text>
         </Box>
       ) : null}
+      {promptBox}
       {autoTrigger ? (
-        <Box width={boxWidth} marginBottom={1}>
+        <Box width={boxWidth} marginTop={1}>
           <Autocomplete value={buf} cursor={cur} width={inputW} onSelect={handleAutoSelect} register={(api) => (autoRef.current = api)} />
         </Box>
       ) : null}
-      {promptBox}
       {sessionInfo ? (
-        <Box width={boxWidth} paddingX={1} paddingTop={0}>
-          <Text color={theme.textMuted} wrap="truncate">
-            {sessionInfo}
-          </Text>
+        <Box width={boxWidth} flexDirection="row" justifyContent="space-between" paddingX={1} paddingTop={0}>
+          <Box flexDirection="row" gap={1} flexShrink={1} overflowX="hidden">
+            {running ? (
+              <Text color={theme.textMuted}>{SPIN_FRAMES[spinnerFrame % SPIN_FRAMES.length]}</Text>
+            ) : (
+              <Text color={theme.textMuted}>⠂</Text>
+            )}
+            <Text color={theme.textMuted} wrap="truncate">
+              {running ? `Running… ${elapsed}s` : "idle"}
+            </Text>
+          </Box>
+          <Box flexShrink={0}>
+            <Text color={theme.textMuted} wrap="truncate">
+              {sessionInfo}
+            </Text>
+          </Box>
         </Box>
       ) : null}
     </Box>

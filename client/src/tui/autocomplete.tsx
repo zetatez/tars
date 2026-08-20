@@ -140,8 +140,8 @@ export function Autocomplete({
   if (!trigger || items.length === 0) {
     if (trigger) {
       return (
-        <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor={theme.border}>
-          <Box paddingLeft={1} paddingRight={1}>
+        <Box flexDirection="column" borderStyle="single" borderColor={theme.borderMuted}>
+          <Box paddingLeft={1} paddingRight={1} backgroundColor={theme.backgroundElement}>
             <Text color={theme.textMuted}>No matching items</Text>
           </Box>
         </Box>
@@ -152,7 +152,7 @@ export function Autocomplete({
   const shown = items.slice(0, 20);
   const sel = Math.min(selected, shown.length - 1);
   return (
-    <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor={theme.border}>
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.borderMuted}>
       <Box flexDirection="column" backgroundColor={theme.backgroundElement}>
         {shown.map((item, i) => (
           <Box

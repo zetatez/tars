@@ -101,9 +101,15 @@ export async function sshFileMeta(t: SshTarget, path: string): Promise<FileMeta>
   return { uid: uid || "", gid: gid || "", mode: mode || "644" };
 }
 
-// 写回远程文件，尽量保持权限/属组（chown 需要 root 或同属主，失败则提示）
+// 写回远程文件（存在则尽量保持权限/属组；不存在则新建，默认 644）
 export async function sshWriteFile(t: SshTarget, path: string, content: string): Promise<{ mode: string; chownOk: boolean }> {
-  const meta = await sshFileMeta(t, path);
+  let meta: FileMeta;
+  try {
+    meta = await sshFileMeta(t, path);
+  } catch {
+    // 目标不存在：按新文件处理
+    meta = { uid: "", gid: "", mode: "644" };
+  }
   const tmp = `/tmp/.tars-vim-${process.pid}-${Date.now()}`;
   // 1) 写入临时文件（stdin 管道）
   await new Promise<void>((resolve, reject) => {
@@ -114,9 +120,18 @@ export async function sshWriteFile(t: SshTarget, path: string, content: string):
     child.on("error", reject);
     child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`ssh write failed (${code})`))));
   });
-  // 2) 覆盖目标（cp -p 保留权限；属主尽力保留）
-  const copy = await sshExec(t, `cp -p ${shq(tmp)} ${shq(path)}`);
-  // 3) 恢复权限
+  // 2) 覆盖目标（cp 失败时目标目录可能不存在：mkdir -p 后重试）
+  let copy = await sshExec(t, `cp -p ${shq(tmp)} ${shq(path)}`);
+  if (copy.code !== 0) {
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".";
+    const mkdir = await sshExec(t, `mkdir -p ${shq(dir)}`);
+    if (mkdir.code !== 0) {
+      await sshExec(t, `rm -f ${shq(tmp)}`);
+      throw new Error(copy.stderr.trim() || `cp failed (${copy.code})`);
+    }
+    copy = await sshExec(t, `cp -p ${shq(tmp)} ${shq(path)}`);
+  }
+  // 3) 恢复权限（新文件默认 644）
   await sshExec(t, `chmod ${meta.mode} ${shq(path)}`);
   // 4) 尽力恢复属主
   let chownOk = true;
