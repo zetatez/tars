@@ -107,7 +107,7 @@ func (p *Pool) Chat(ctx context.Context, req ChatRequest) (*Result, error) {
 	if len(p.entries) == 0 {
 		return nil, errors.New("no llm providers configured")
 	}
-	seen := map[string]bool{}
+	seen := map[*entry]bool{}
 	var lastErr error
 	delay := p.backoff
 
@@ -134,7 +134,7 @@ func (p *Pool) Chat(ctx context.Context, req ChatRequest) (*Result, error) {
 		lastErr = err
 		var unavail *UnavailableError
 		if errors.As(err, &unavail) {
-			// provider 不可用（限流/配额/鉴权/5xx）：立即标记并快速 failover，不等待退避
+			// provider 不可用（限流/配额/鉴权/5xx/连接失败）：立即标记并快速 failover，不等待退避
 			p.markUnavailable(e)
 			continue
 		}
@@ -150,19 +150,19 @@ func (p *Pool) Chat(ctx context.Context, req ChatRequest) (*Result, error) {
 	return nil, lastErr
 }
 
-func (p *Pool) pick(seen map[string]bool) *entry {
+func (p *Pool) pick(seen map[*entry]bool) *entry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	healthy := make([]*entry, 0, len(p.entries))
 	for _, e := range p.entries {
-		if !seen[e.provider.Name()] && e.isHealthy() {
+		if !seen[e] && e.isHealthy() {
 			healthy = append(healthy, e)
 		}
 	}
 	if len(healthy) == 0 {
 		for _, e := range p.entries {
-			if !seen[e.provider.Name()] {
+			if !seen[e] {
 				healthy = append(healthy, e)
 			}
 		}
@@ -186,7 +186,7 @@ func (p *Pool) pick(seen map[string]bool) *entry {
 		chosen = healthy[0]
 	}
 	if chosen != nil {
-		seen[chosen.provider.Name()] = true
+		seen[chosen] = true
 	}
 	return chosen
 }

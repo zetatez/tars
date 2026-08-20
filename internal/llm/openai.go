@@ -30,7 +30,7 @@ func newOpenAIProvider(cfg config.LLMProvider, idleTimeout time.Duration) *opena
 		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
 		apiKey:      cfg.APIKey,
 		model:       cfg.Model,
-		http:        &http.Client{},
+		http:        newHTTPClient(),
 		idleTimeout: idleTimeout,
 	}
 }
@@ -68,7 +68,8 @@ func (p *openaiProvider) Chat(ctx context.Context, req ChatRequest) (*Result, er
 	}
 	resp, err := p.http.Do(httpReq)
 	if err != nil {
-		return nil, err
+		// 连接/超时等网络错误：视为 provider 不可用，立即 failover
+		return nil, &UnavailableError{Reason: err.Error()}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
