@@ -25,6 +25,26 @@ function readClipboard(): Promise<string | null> {
   });
 }
 
+function writeClipboard(text: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const cmds: Array<[string, string[]]> = [
+      ["wl-copy", []],
+      ["xclip", ["-selection", "clipboard"]],
+    ];
+    const tryNext = (i: number) => {
+      if (i >= cmds.length) return resolve(false);
+      const [cmd, args] = cmds[i];
+      const child = execFile(cmd, args, { timeout: 1000 }, (err) => {
+        if (!err) resolve(true);
+        else tryNext(i + 1);
+      });
+      child.stdin?.on("error", () => tryNext(i + 1));
+      child.stdin?.end(text);
+    };
+    tryNext(0);
+  });
+}
+
 export interface PromptProps {
   running: boolean;
   elapsed: number;
@@ -38,16 +58,20 @@ export interface PromptProps {
   clientIp: string;
   everTyped: boolean;
   leaderActive: boolean;
+  leaderHint?: string;
   inputLocked: boolean;
   maxWidth?: number;
   center?: boolean;
   tokens?: number;
+  sessionInfo?: string;
   onSubmit: (text: string) => void;
   onExit: () => void;
   onInterrupt: () => void;
   onToggleMode: () => void;
   onTyped: () => void;
+  onToast?: (text: string, kind?: "info" | "error" | "warning") => void;
   onCommandSelect: (cmdText: string) => void;
+  onSessionSwitch?: () => void;
   registerPrompt: (api: { setText(text: string): void } | null) => void;
 }
 
@@ -64,16 +88,20 @@ export function Prompt({
   clientIp,
   everTyped,
   leaderActive,
+  leaderHint,
   inputLocked,
   maxWidth,
   center,
   tokens,
+  sessionInfo,
   onSubmit,
   onExit,
   onInterrupt,
   onToggleMode,
   onTyped,
+  onToast,
   onCommandSelect,
+  onSessionSwitch,
   registerPrompt,
 }: PromptProps) {
   const { stdout } = useStdout();
@@ -84,6 +112,8 @@ export function Prompt({
   const [buf, setBuf] = useState("");
   const [cur, setCur] = useState(0);
   const [sel, setSel] = useState<number | null>(null);
+  const [vimMode, setVimMode] = useState<"edit" | "norm">("edit");
+  const pendingRef2 = useRef("");
   const [history, setHistory] = useState<string[]>([]);
   const [histIdx, setHistIdx] = useState(-1);
   const [spinnerFrame, setSpinnerFrame] = useState(0);
@@ -225,6 +255,7 @@ export function Prompt({
     setHistory((h) => [...h, text]);
     setHistIdx(-1);
     mutate("", 0, false);
+    setVimMode("edit");
     onSubmit(text);
   }
 
@@ -271,6 +302,117 @@ export function Prompt({
 
   useInput((input, key) => {
     if (inputLocked || leaderActive) return;
+
+    // ---- vim norm 模式 ----
+    if (vimMode === "norm") {
+      const pk = pendingRef2.current;
+      if (key.escape) {
+        pendingRef2.current = "";
+        // 第一次 Esc 预备打断（onInterrupt 内部处理 escArmed），第二次真正打断。
+        // 空闲时 Esc 保持 norm 模式。
+        onInterrupt();
+        return;
+      }
+      if (key.return) {
+        pendingRef2.current = "";
+        const text = bufRef.current;
+        if (text.trim()) submit(text);
+        return;
+      }
+      if (key.upArrow || input === "k") {
+        pendingRef2.current = "";
+        historyMove(-1);
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        pendingRef2.current = "";
+        historyMove(1);
+        return;
+      }
+      if (key.leftArrow || input === "h") {
+        pendingRef2.current = "";
+        setCur(Math.max(0, curRef.current - 1));
+        setSel(null);
+        return;
+      }
+      if (key.rightArrow || input === "l") {
+        pendingRef2.current = "";
+        setCur(Math.min(bufRef.current.length, curRef.current + 1));
+        setSel(null);
+        return;
+      }
+      if (pk === "d" && input === "d") {
+        pendingRef2.current = "";
+        mutate("", 0);
+        return;
+      }
+      if (pk === "d") {
+        pendingRef2.current = "";
+        const { end } = logicalLineBounds(bufRef.current, curRef.current);
+        const text = bufRef.current.slice(0, curRef.current) + bufRef.current.slice(end);
+        mutate(text, curRef.current);
+        return;
+      }
+      if (pk === "y" && input === "y") {
+        pendingRef2.current = "";
+        const { start, end } = logicalLineBounds(bufRef.current, curRef.current);
+        void writeClipboard(bufRef.current.slice(start, end)).then((ok) =>
+          onToast?.(ok ? "yanked line" : "no clipboard tool", ok ? "info" : "error"),
+        );
+        return;
+      }
+      if (input === "i" || input === "a" || input === "A") {
+        pendingRef2.current = "";
+        if (input === "a") setCur(Math.min(bufRef.current.length, curRef.current + 1));
+        else if (input === "A") setCur(bufRef.current.length);
+        setVimMode("edit");
+        setSel(null);
+        return;
+      }
+      if (input === "0") {
+        pendingRef2.current = "";
+        setCur(logicalLineBounds(bufRef.current, curRef.current).start);
+        setSel(null);
+        return;
+      }
+      if (input === "$") {
+        pendingRef2.current = "";
+        setCur(logicalLineBounds(bufRef.current, curRef.current).end);
+        setSel(null);
+        return;
+      }
+      if (input === "x") {
+        pendingRef2.current = "";
+        if (bufRef.current.length > 0) {
+          const at = Math.min(curRef.current, bufRef.current.length - 1);
+          mutate(bufRef.current.slice(0, at) + bufRef.current.slice(at + 1), at);
+        }
+        return;
+      }
+      if (input === "z") {
+        pendingRef2.current = "";
+        onSessionSwitch?.();
+        return;
+      }
+      if (input === "u") {
+        pendingRef2.current = "";
+        undo();
+        return;
+      }
+      if (key.ctrl && input === "r") {
+        pendingRef2.current = "";
+        redo();
+        return;
+      }
+      if (input === "d" || input === "y") {
+        pendingRef2.current = input;
+        return;
+      }
+      // 其它键：作为 pending 处理（支持 dd 等双键），也允许 i/o 之外的导航
+      pendingRef2.current = "";
+      return;
+    }
+
     if (autoTrigger && autoRef.current) {
       if (key.upArrow) {
         autoRef.current.move(-1);
@@ -355,7 +497,8 @@ export function Prompt({
     }
 
     if (key.escape) {
-      if (running) onInterrupt();
+      setVimMode("norm");
+      setSel(null);
       return;
     }
     if (key.return && !key.shift && !key.meta && !key.ctrl) {
@@ -453,12 +596,69 @@ export function Prompt({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registerPrompt]);
 
-  const borderColor = leaderActive ? theme.borderActive : theme.borderMuted;
+  const borderColor = leaderActive || vimMode === "norm" ? theme.borderActive : theme.borderMuted;
   const selRange = sel === null ? undefined : { start: Math.min(sel, cur), end: Math.max(sel, cur) };
 
   const promptBox = (
     <Box width={boxWidth} flexDirection="column" flexShrink={0}>
-      <Box flexDirection="column" borderStyle="single" borderColor={borderColor} backgroundColor={theme.inputBg}>
+      <Box flexDirection="row" gap={1} marginTop={0} paddingX={1} minHeight={1}>
+        {running ? (
+          <Text color={theme.accent}>{SPIN_FRAMES[spinnerFrame % SPIN_FRAMES.length]}</Text>
+        ) : (
+          <Text color={theme.textMuted}>⠂</Text>
+        )}
+        <Text color={running ? theme.text : theme.textMuted}>
+          {running ? `Running… ${elapsed}s` : "idle"}
+        </Text>
+        {running ? (
+          <Text>
+            esc{" "}
+            <Text color={escArmed ? theme.accent : theme.textMuted}>
+              {escArmed ? "again to interrupt" : "interrupt"}
+            </Text>
+          </Text>
+        ) : null}
+      </Box>
+      <Box flexDirection="row" justifyContent="space-between" marginTop={0} paddingX={1}>
+        <Box flexDirection="row" gap={1} flexShrink={1} overflowX="hidden">
+          <Text color={theme.accent} wrap="truncate">
+            {serverUser || "-"}@{serverIp}
+          </Text>
+          <Text color={theme.textMuted}>→</Text>
+          <Text color={theme.textMuted} wrap="truncate">
+            {clientUser || "-"}@{clientIp || "?"}
+          </Text>
+        </Box>
+        <Box flexDirection="row" gap={1} flexShrink={0} overflowX="hidden">
+          <Text color={theme.textMuted}>·</Text>
+          <Text color={mode === "plan" ? theme.accent : theme.secondary} bold>
+            {mode === "plan" ? "Plan" : "Build"}
+          </Text>
+          <Text color={theme.textMuted}>·</Text>
+          <Text color={theme.textMuted}>{tokens != null ? `~${tokens} tokens` : "-"}</Text>
+          <Text color={theme.textMuted}>·</Text>
+          <Text color={theme.text}>
+            {provider ? `${provider}:` : ""}
+            {model || "tars"}
+          </Text>
+        </Box>
+      </Box>
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        <Box
+          flexShrink={0}
+          backgroundColor={mode === "plan" ? theme.accent : theme.secondary}
+          paddingX={1}
+        >
+          <Text color={theme.background} bold>
+            {mode === "plan" ? "P" : "B"}
+          </Text>
+        </Box>
+        <Box flexShrink={0} backgroundColor={vimMode === "norm" ? theme.warning : theme.darkGray} paddingX={1}>
+          <Text color={vimMode === "norm" ? "#000000" : theme.text} bold>
+            {vimMode === "norm" ? "NORM" : "EDIT"}
+          </Text>
+        </Box>
+        <Box flexGrow={1} flexDirection="column" borderStyle="single" borderColor={borderColor} backgroundColor={theme.inputBg}>
         <Box flexDirection="column" paddingX={1} paddingY={0}>
           {buf === "" && !everTyped ? (
             <Box flexDirection="row">
@@ -490,41 +690,6 @@ export function Prompt({
             })
           )}
         </Box>
-      </Box>
-      {running ? (
-        <Box flexDirection="row" gap={1} marginTop={1} paddingX={1}>
-          <Text color={theme.accent}>{SPIN_FRAMES[spinnerFrame % SPIN_FRAMES.length]}</Text>
-          <Text color={theme.text}>Running… {elapsed}s</Text>
-          <Text>
-            esc{" "}
-            <Text color={escArmed ? theme.accent : theme.textMuted}>
-              {escArmed ? "again to interrupt" : "interrupt"}
-            </Text>
-          </Text>
-        </Box>
-      ) : null}
-      <Box flexDirection="row" justifyContent="space-between" marginTop={1} paddingX={1}>
-        <Box flexDirection="row" gap={1} flexShrink={1} overflowX="hidden">
-          <Text color={theme.accent} wrap="truncate">
-            {serverUser || "-"}@{serverIp}
-          </Text>
-          <Text color={theme.textMuted}>→</Text>
-          <Text color={theme.textMuted} wrap="truncate">
-            {clientUser || "-"}@{clientIp || "?"}
-          </Text>
-        </Box>
-        <Box flexDirection="row" gap={1} flexShrink={0} overflowX="hidden">
-          <Text color={theme.textMuted}>·</Text>
-          <Text color={mode === "plan" ? theme.accent : theme.secondary} bold>
-            {mode === "plan" ? "Plan" : "Build"}
-          </Text>
-          <Text color={theme.textMuted}>·</Text>
-          <Text color={theme.textMuted}>{tokens != null ? `~${tokens} tokens` : "-"}</Text>
-          <Text color={theme.textMuted}>·</Text>
-          <Text color={theme.text}>
-            {provider ? `${provider}:` : ""}
-            {model || "tars"}
-          </Text>
         </Box>
       </Box>
     </Box>
@@ -532,12 +697,26 @@ export function Prompt({
 
   return (
     <Box flexDirection="column" flexShrink={0} alignItems={center ? "center" : undefined} width={center ? "100%" : undefined}>
+      {leaderActive && leaderHint ? (
+        <Box width={boxWidth} marginBottom={1} backgroundColor={theme.primary} paddingX={1} flexShrink={0}>
+          <Text color={theme.background} bold wrap="truncate">
+            {leaderHint}
+          </Text>
+        </Box>
+      ) : null}
       {autoTrigger ? (
         <Box width={boxWidth} marginBottom={1}>
           <Autocomplete value={buf} cursor={cur} width={inputW} onSelect={handleAutoSelect} register={(api) => (autoRef.current = api)} />
         </Box>
       ) : null}
       {promptBox}
+      {sessionInfo ? (
+        <Box width={boxWidth} paddingX={1} paddingTop={0}>
+          <Text color={theme.textMuted} wrap="truncate">
+            {sessionInfo}
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

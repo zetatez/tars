@@ -12,7 +12,7 @@ import type { EventData, Message } from "../types.js";
 import { theme, charWidth } from "./theme.js";
 import { MessageView } from "./messages.js";
 import { Prompt } from "./prompt.js";
-import { DialogSelect, DialogConfirm, DialogHelp, DialogApproval, type SelectOption } from "./dialog.js";
+import { DialogSelect, DialogConfirm, DialogHelp, DialogApproval, LeaderMenu, SessionSwitcher, type SelectOption, type LeaderItem } from "./dialog.js";
 import { SLASH_COMMANDS } from "./keys.js";
 import { openEditor } from "./editor.js";
 import { setSuspendImpl } from "./suspend.js";
@@ -166,7 +166,7 @@ export function TuiApp({
   const serverUser = sshTarget.user ?? "";
 
   const [serverIp, setServerIp] = useState(host);
-  const [clientIp, setClientIp] = useState("");
+  const [clientIp, setClientIp] = useState(hostname());
   useEffect(() => {
     let alive = true;
     void resolveIp(host).then((ip) => alive && setServerIp(ip));
@@ -187,7 +187,6 @@ export function TuiApp({
     <Box flexDirection="column" height="100%">
       <Box flexShrink={0} paddingBottom={1}>
         <StatusBar
-          api={api}
           currentSessionId={view.type === "session" ? view.id : undefined}
           onHeightChange={setStatusBarH}
         />
@@ -282,7 +281,7 @@ function HomeView({
   onExit: () => void;
 }) {
   const [leaderPending, setLeaderPending] = useState(false);
-  const [dialog, setDialog] = useState<null | { kind: "sessions" } | { kind: "help" } | { kind: "models" } | { kind: "agents" }>(null);
+  const [dialog, setDialog] = useState<null | { kind: "sessions" } | { kind: "help" } | { kind: "models" } | { kind: "agents" } | { kind: "switch" }>(null);
   const [sessions, setSessions] = useState<SelectOption[]>([]);
   const [modelOptions, setModelOptions] = useState<SelectOption[]>([]);
   const [toast, setToast] = useState<{ text: string; kind: "info" | "error" | "warning" } | null>(null);
@@ -407,7 +406,7 @@ function HomeView({
     if (leaderPending) {
       const c = input.toLowerCase();
       if (c === "q") onExit();
-      else if (c === "l") openSessions();
+      else if (c === "l" || c === "r") openSessions();
       else if (c === "h") setDialog({ kind: "help" });
       setLeaderPending(false);
       return;
@@ -417,7 +416,11 @@ function HomeView({
 
   return (
     <Box flexDirection="column" height="100%">
-      <Box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} />
+      <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center" paddingLeft={2} paddingRight={2}>
+        <Text bold color={theme.accent}>
+          TARS
+        </Text>
+      </Box>
       <Box paddingLeft={2} paddingRight={2} paddingBottom={1} flexShrink={0}>
         <Prompt
           running={false}
@@ -431,18 +434,32 @@ function HomeView({
           clientIp={clientIp}
           everTyped={everTyped}
           leaderActive={leaderPending}
+          leaderHint="l/r=sessions · h=help · q=exit"
           inputLocked={dialog !== null}
           onSubmit={handleSubmit}
           onExit={onExit}
           onInterrupt={() => {}}
           onToggleMode={onToggleMode}
           onTyped={onTyped}
+          onToast={showToast}
           onCommandSelect={(cmd) => handleSubmit(cmd)}
+          onSessionSwitch={() => setDialog({ kind: "switch" })}
           registerPrompt={(api2) => {
             promptApi.current = api2;
           }}
         />
       </Box>
+
+      {dialog?.kind === "switch" ? (
+        <SessionSwitcher
+          api={api}
+          onSelect={(id) => {
+            setDialog(null);
+            onResume(id);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      ) : null}
 
       {dialog?.kind === "sessions" ? (
         <DialogSelect
@@ -504,6 +521,7 @@ function HomeView({
 type DialogState =
   | null
   | { kind: "sessions" }
+  | { kind: "switch" }
   | { kind: "models" }
   | { kind: "agents" }
   | { kind: "confirmDelete" }
@@ -565,6 +583,7 @@ function SessionView({
   const [scroll, setScroll] = useState(0);
   const [escArmed, setEscArmed] = useState(false);
   const [leaderPending, setLeaderPending] = useState(false);
+  const [leaderFocus, setLeaderFocus] = useState(0);
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [sessions, setSessions] = useState<SelectOption[]>([]);
@@ -572,7 +591,6 @@ function SessionView({
   const [approvals, setApprovals] = useState<Array<{ id: string; action: string; resource: string }>>([]);
 
   const modelName = () => (provider ? `${provider}:` : "") + (model || "tars");
-
   const frozenRef = useRef<number | null>(null);
   const lastSeqRef = useRef(initialMessages.length ? initialMessages[initialMessages.length - 1].seq : 0);
   const pendingRef = useRef(false);
@@ -931,12 +949,12 @@ function SessionView({
     return () => clearTimeout(t);
   }, [escArmed]);
 
-  useInput((input, key) => {
-    if (dialogOpen) return;
-    if (leaderPending) {
-      const c = input.toLowerCase();
-      if (c === "n") onNew();
-      else if (c === "l") {
+  const leaderItems: LeaderItem[] = [
+    { key: "n", label: "new session", run: onNew },
+    {
+      key: "l",
+      label: "sessions",
+      run: () => {
         void (async () => {
           try {
             const { sessions: list } = await api.listSessions();
@@ -952,22 +970,62 @@ function SessionView({
             showToast((err as Error).message, "error");
           }
         })();
-      } else if (c === "q") onExit();
-      else if (c === "h") setDialog({ kind: "help" });
-      else if (c === "e") {
+      },
+    },
+    {
+      key: "e",
+      label: "editor",
+      run: () => {
         void openEditor("").then((content) => {
           if (content) promptApiRef.current?.setText(content);
         });
-      } else if (c === "y") {
+      },
+    },
+    {
+      key: "y",
+      label: "copy",
+      run: () => {
         void writeClipboard(transcriptLines(messages)).then((ok) =>
           showToast(ok ? "transcript copied" : "no clipboard tool found", ok ? "info" : "error"),
         );
-      } else showToast(`ctrl+x ${c || "?"} — unbound`, "warning");
-      setLeaderPending(false);
+      },
+    },
+    { key: "h", label: "help", run: () => setDialog({ kind: "help" }) },
+    { key: "q", label: "exit", run: onExit },
+  ];
+
+  useInput((input, key) => {
+    if (dialogOpen) return;
+    if (leaderPending) {
+      const items = leaderItems;
+      const close = () => {
+        setLeaderPending(false);
+        setLeaderFocus(0);
+      };
+      if (key.escape) return close();
+      if (key.upArrow) {
+        setLeaderFocus((f) => (f - 1 + items.length) % items.length);
+        return;
+      }
+      if (key.downArrow || key.tab) {
+        setLeaderFocus((f) => (f + 1) % items.length);
+        return;
+      }
+      if (key.return) {
+        items[leaderFocus]?.run();
+        return close();
+      }
+      const c = input.toLowerCase();
+      const idx = items.findIndex((i) => i.key === c);
+      if (idx !== -1) {
+        items[idx].run();
+        return close();
+      }
       return;
     }
     if (key.ctrl && input === "x") {
       setLeaderPending(true);
+      setLeaderFocus(0);
       return;
     }
     if (key.ctrl && input === "o") {
@@ -1006,15 +1064,8 @@ function SessionView({
 
   return (
     <Box flexDirection="column" height="100%" paddingLeft={2} paddingRight={2}>
-      <Box flexShrink={0} flexDirection="row" gap={1} paddingBottom={0}>
-        <Text color={status === "running" ? theme.accent : theme.textMuted}>{status}</Text>
-        <Text color={theme.textMuted}>·</Text>
-        <Text color={theme.textMuted}>session id: {sid.slice(0, 8)}</Text>
-        <Text color={theme.textMuted}>·</Text>
-        <Text color={theme.textMuted}>{messages.length} msgs</Text>
-      </Box>
       <Box flexGrow={1} flexDirection="row" minHeight={0}>
-        <Box height={viewH} flexDirection="column" justifyContent="flex-end" minHeight={0} overflowY="hidden">
+        <Box flexGrow={1} flexDirection="column" justifyContent="flex-end" minHeight={0} overflowY="hidden">
           {scroll > 0 && end <= 1 ? (
             <Text color={theme.textMuted}>— 已到顶部 —</Text>
           ) : null}
@@ -1042,6 +1093,7 @@ function SessionView({
         ) : null}
       </Box>
 
+{leaderPending ? <LeaderMenu items={leaderItems} focus={leaderFocus} onClose={() => setLeaderPending(false)} /> : null}
       <Prompt
         running={status === "running"}
         elapsed={elapsed}
@@ -1053,13 +1105,15 @@ function SessionView({
         serverIp={serverIp}
         clientUser={clientUser}
         clientIp={clientIp}
+        sessionInfo={`${status} · session id: ${sid.slice(0, 8)} · ${messages.length} msgs`}
         everTyped={everTyped}
-        tokens={estimateTokens(messages)}
         leaderActive={leaderPending}
+        leaderHint="n=new · l/r=sessions · e=editor · q=exit · y=copy · h=help"
         inputLocked={dialogOpen}
         onSubmit={send}
         onExit={onExit}
         onInterrupt={() => {
+          if (status !== "running") return;
           if (escArmed) interrupt();
           else {
             setEscArmed(true);
@@ -1068,11 +1122,25 @@ function SessionView({
         }}
         onToggleMode={onToggleMode}
         onTyped={onTyped}
+        onToast={showToast}
         onCommandSelect={send}
+        onSessionSwitch={() => setDialog({ kind: "switch" })}
         registerPrompt={(api2) => {
           promptApiRef.current = api2;
         }}
       />
+
+      {dialog?.kind === "switch" ? (
+        <SessionSwitcher
+          api={api}
+          currentId={sid}
+          onSelect={(id) => {
+            setDialog(null);
+            loadSession(id);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      ) : null}
 
       {dialog?.kind === "sessions" ? (
         <DialogSelect
