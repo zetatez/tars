@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"tars/internal/acp"
 	"tars/internal/agent"
 	"tars/internal/api"
 	"tars/internal/auth"
@@ -65,10 +66,12 @@ func main() {
 		return mgr.RunSync(keyID, cwd, model, role, prompt, depth)
 	})
 	srv := api.New(cfg, st.DB(), logger, mgr, qc, llmPool)
+	acpSrv := acp.New(cfg, st.DB(), logger, mgr, reg, permEval)
 	mcpSrv := mcp.New(cfg, st.DB(), logger, reg, permEval, mgr)
 
 	root := http.NewServeMux()
 	root.Handle("/mcp", mcpSrv.Handler())
+	root.Handle("/acp", acpSrv.Handler())
 	root.Handle("/", srv.Handler())
 
 	httpServer := &http.Server{
