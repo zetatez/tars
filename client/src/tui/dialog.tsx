@@ -307,13 +307,14 @@ export function SessionSwitcher({
 
   useEffect(() => {
     const s = filtered[selVal];
-    if (!s || s.id === cur) return;
+    if (!s) return;
     setCur(s.id);
     api
       .messages(s.id, 0, 20)
       .then((msgs) => setPreview(msgs.slice(-10)))
       .catch(() => setPreview([]));
-  }, [filtered, selVal, api, cur]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, selVal, api]);
 
   useEffect(() => setSel(0), [query]);
 
@@ -328,11 +329,11 @@ export function SessionSwitcher({
       return;
     }
     if (focusInput) {
-      if (key.upArrow || (key.ctrl && input === "p")) {
+      if (key.upArrow || (key.ctrl && input === "p") || input === "k") {
         setSel((v) => Math.max(0, v - 1));
         return;
       }
-      if (key.downArrow || (key.ctrl && input === "n") || key.tab) {
+      if (key.downArrow || (key.ctrl && input === "n") || key.tab || input === "j") {
         setSel((v) => Math.min(filtered.length - 1, v + 1));
         return;
       }

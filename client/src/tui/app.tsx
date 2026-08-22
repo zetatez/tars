@@ -16,7 +16,6 @@ import { DialogSelect, DialogConfirm, DialogHelp, DialogApproval, LeaderMenu, Se
 import { SLASH_COMMANDS } from "./keys.js";
 import { openEditor } from "./editor.js";
 import { setSuspendImpl } from "./suspend.js";
-import { StatusBar } from "./statusbar.js";
 import { runSsh, runVim, runBang } from "./commands.js";
 import { type SshTarget } from "./ssh.js";
 
@@ -140,7 +139,6 @@ export function TuiApp({
 }) {
   const { exit, suspendTerminal } = useApp();
   const [view, setView] = useState<View>(sessionId ? { type: "session", id: sessionId } : { type: "home" });
-  const [statusBarH, setStatusBarH] = useState<number | undefined>(undefined);
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>(initialPrompt);
   const [mode, setMode] = useState<"build" | "plan">("build");
   const [everTyped, setEverTyped] = useState(false);
@@ -185,9 +183,6 @@ export function TuiApp({
 
   return (
     <Box flexDirection="column" height="100%">
-      <Box flexShrink={0} paddingBottom={1}>
-        <StatusBar onHeightChange={setStatusBarH} />
-      </Box>
       <Box flexGrow={1} flexDirection="column" minHeight={0}>
         {view.type === "home" ? (
           <HomeView
@@ -221,7 +216,6 @@ export function TuiApp({
             api={api}
             sshTarget={sshTarget}
             sessionId={view.id}
-            statusBarHeight={statusBarH}
             initialMessages={initialMessages && view.id === sessionId ? initialMessages : []}
             initialPrompt={pendingPrompt}
             mode={mode}
@@ -278,8 +272,9 @@ function HomeView({
   onExit: () => void;
 }) {
   const [leaderPending, setLeaderPending] = useState(false);
-  const [dialog, setDialog] = useState<null | { kind: "sessions" } | { kind: "help" } | { kind: "models" } | { kind: "agents" } | { kind: "switch" }>(null);
+  const [dialog, setDialog] = useState<null | { kind: "sessions" } | { kind: "help" } | { kind: "models" } | { kind: "agents" } | { kind: "switch" } | { kind: "tools" }>(null);
   const [sessions, setSessions] = useState<SelectOption[]>([]);
+  const [tools, setTools] = useState<SelectOption[]>([]);
   const [modelOptions, setModelOptions] = useState<SelectOption[]>([]);
   const [toast, setToast] = useState<{ text: string; kind: "info" | "error" | "warning" } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -353,10 +348,26 @@ function HomeView({
           break;
         case "init":
         case "themes":
-        case "skills":
         case "variants":
-        case "mcps":
           showToast(`暂不支持 /${cmd}`, "warning");
+          break;
+        case "skills":
+        case "mcps":
+          void (async () => {
+            try {
+              const tools = await api.mcpTools();
+              setTools(
+                tools.map((t) => ({
+                  key: t.name,
+                  title: t.name,
+                  detail: (t.description ?? "").slice(0, 80),
+                })),
+              );
+              setDialog({ kind: "tools" });
+            } catch (err) {
+              showToast(`获取工具列表失败：${(err as Error).message}`, "error");
+            }
+          })();
           break;
         case "help":
           setDialog({ kind: "help" });
@@ -458,6 +469,16 @@ function HomeView({
         />
       ) : null}
 
+      {dialog?.kind === "tools" ? (
+        <DialogSelect
+          title="Tools (MCP)"
+          options={tools}
+          footerHint="↑↓ navigate · enter close · esc close"
+          onSelect={() => setDialog(null)}
+          onCancel={() => setDialog(null)}
+        />
+      ) : null}
+
       {dialog?.kind === "sessions" ? (
         <DialogSelect
           title="Sessions"
@@ -519,6 +540,7 @@ type DialogState =
   | null
   | { kind: "sessions" }
   | { kind: "switch" }
+  | { kind: "tools" }
   | { kind: "models" }
   | { kind: "agents" }
   | { kind: "confirmDelete" }
@@ -528,7 +550,6 @@ function SessionView({
   api,
   sshTarget,
   sessionId,
-  statusBarHeight,
   initialMessages,
   initialPrompt,
   mode,
@@ -547,7 +568,6 @@ function SessionView({
   api: API;
   sshTarget: SshTarget;
   sessionId: string;
-  statusBarHeight?: number;
   initialMessages: Message[];
   initialPrompt?: string;
   mode: "build" | "plan";
@@ -566,8 +586,8 @@ function SessionView({
   const { stdout } = useStdout();
   const columns = stdout.columns ?? 80;
   const rows = stdout.rows ?? 24;
-  // 消息区可视高度：终端行数扣除顶部状态栏、session header、底部输入区（约 5 行）。
-  const viewH = Math.max(5, rows - (statusBarHeight ?? 10) - 6);
+  // 消息区可视高度：终端行数扣除 session header 与底部输入区。
+  const viewH = Math.max(5, rows - 8);
 
   const [sid, setSid] = useState(sessionId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
@@ -584,6 +604,7 @@ function SessionView({
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [sessions, setSessions] = useState<SelectOption[]>([]);
+  const [tools, setTools] = useState<SelectOption[]>([]);
   const [modelOptions, setModelOptions] = useState<SelectOption[]>([]);
   const [approvals, setApprovals] = useState<Array<{ id: string; action: string; resource: string }>>([]);
 
@@ -671,7 +692,6 @@ function SessionView({
 
   const send = useCallback(
     (text: string) => {
-      process.stderr.write(`[send] ${JSON.stringify(text)}\n`);
       const trimmed = text.trim();
       if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
         onExit();
@@ -758,13 +778,25 @@ function SessionView({
             showToast("仅支持当前主题", "warning");
             break;
           case "skills":
-            showToast("暂不支持 skills", "warning");
+          case "mcps":
+            void (async () => {
+              try {
+                const tools = await api.mcpTools();
+                setTools(
+                  tools.map((t) => ({
+                    key: t.name,
+                    title: t.name,
+                    detail: (t.description ?? "").slice(0, 80),
+                  })),
+                );
+                setDialog({ kind: "tools" });
+              } catch (err) {
+                showToast(`获取工具列表失败：${(err as Error).message}`, "error");
+              }
+            })();
             break;
           case "variants":
             showToast("暂不支持 variants", "warning");
-            break;
-          case "mcps":
-            showToast("暂不支持 mcps", "warning");
             break;
           case "ssh":
             runSsh(sshTarget, showToast);
@@ -1137,6 +1169,16 @@ function SessionView({
             setDialog(null);
             loadSession(id);
           }}
+          onCancel={() => setDialog(null)}
+        />
+      ) : null}
+
+      {dialog?.kind === "tools" ? (
+        <DialogSelect
+          title="Tools (MCP)"
+          options={tools}
+          footerHint="↑↓ navigate · enter close · esc close"
+          onSelect={() => setDialog(null)}
           onCancel={() => setDialog(null)}
         />
       ) : null}

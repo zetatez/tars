@@ -131,9 +131,12 @@ function UserMessageView({ m }: { m: Message }) {
 function AssistantMessageView({ m, toolsExpanded }: { m: Message; toolsExpanded: boolean }) {
   const c = m.content;
   if (c.error) {
+    const errText = c.error.split("\n")[0].slice(0, 200);
     return (
       <Box flexDirection="column" flexShrink={0} marginTop={1} width="100%" backgroundColor={theme.toolErrorBg} paddingX={1} paddingY={1}>
-        <Text color={theme.error}>{c.error}</Text>
+        <Text color={theme.error} wrap="truncate">
+          ✗ {errText}
+        </Text>
       </Box>
     );
   }

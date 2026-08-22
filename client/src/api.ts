@@ -121,4 +121,18 @@ export class API {
   eventURL(id: string, after = 0): string {
     return this.baseURL.replace(/\/$/, "") + `/api/v1/session/${id}/event?after=${after}`;
   }
+
+  // MCP JSON-RPC：tools/list，返回 { name, description } 列表
+  async mcpTools(): Promise<Array<{ name: string; description: string }>> {
+    const r = await this.req<{ result?: { tools?: Array<{ name?: string; description?: string }> } }>("POST", "/mcp", {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+      params: {},
+    });
+    return (r?.result?.tools ?? []).map((t) => ({
+      name: t.name ?? "",
+      description: t.description ?? "",
+    }));
+  }
 }

@@ -307,9 +307,12 @@ export function Prompt({
     if (input.includes("\r") || input.includes("\n")) {
       const idx = input.search(/[\r\n]/);
       const textPart = input.slice(0, idx);
+      const full = textPart
+        ? bufRef.current.slice(0, curRef.current) + textPart + bufRef.current.slice(curRef.current)
+        : bufRef.current;
       if (textPart) insert(textPart);
       if (input[idx] === "\r" && !key.shift) {
-        const candidate = (textPart || bufRef.current).trim();
+        const candidate = full.trim();
         if (candidate) submit(candidate);
         return;
       }
