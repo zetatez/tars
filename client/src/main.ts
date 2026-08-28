@@ -8,11 +8,12 @@ import type { EventData, Message, ToolCall } from "./types.js";
 
 const BASE_URL = "http://localhost:8899";
 
-function parseGlobalArgs(argv: string[]): { baseURL: string; key: string; clientUser: string; passphrase: string; rest: string[] } {
+function parseGlobalArgs(argv: string[]): { baseURL: string; key: string; clientUser: string; sshUser?: string; passphrase: string; rest: string[] } {
   let baseURL = process.env.TARS_BASE_URL ?? BASE_URL;
   let key = process.env.TARS_API_KEY ?? "";
   let passphrase = process.env.TARS_ADMIN_PASSPHRASE ?? "";
-  let clientUser = process.env.TARS_SSH_USER ?? process.env.USER ?? "";
+  let clientUser = process.env.TARS_CLIENT_USER ?? process.env.USER ?? "";
+  let sshUser = process.env.TARS_SSH_USER;
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -20,10 +21,10 @@ function parseGlobalArgs(argv: string[]): { baseURL: string; key: string; client
     else if (a === "--key" || a === "-k") key = argv[++i] ?? key;
     else if (a === "--passphrase" || a === "-P") passphrase = argv[++i] ?? passphrase;
     else if (a === "--client-user") clientUser = argv[++i] ?? clientUser;
-    else if (a === "--ssh-user") clientUser = argv[++i] ?? clientUser;
+    else if (a === "--ssh-user") sshUser = argv[++i] ?? sshUser;
     else rest.push(a);
   }
-  return { baseURL, key, clientUser, passphrase, rest };
+  return { baseURL, key, clientUser, sshUser, passphrase, rest };
 }
 
 function fail(msg: string): never {
@@ -119,14 +120,20 @@ async function cmdPrompt(api: API, args: string[]): Promise<void> {
 
   await new Promise<void>((resolve) => {
     let done = false;
+    let stop: (() => void) | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let observedRunning = false;
+    let observedMessage = false;
+    const startedAt = Date.now();
     const finish = () => {
       if (done) return;
       done = true;
-      stop();
+      timer && clearInterval(timer);
+      stop?.();
       console.log(`${C.gray}(done in ${((Date.now() - t0) / 1000).toFixed(1)}s)${C.reset}`);
       resolve();
     };
-    const stop = streamEvents(
+    stop = streamEvents(
       api.eventURL(id, after),
       apiKeyOf(api),
       (ev: EventData) => {
@@ -160,11 +167,16 @@ async function cmdPrompt(api: API, args: string[]): Promise<void> {
     );
     // 兜底：turn 若在订阅建立前已结束（快 LLM），live 事件会丢失；
     // 轮询 session 状态，非 running 即认为完成。
-    const timer = setInterval(async () => {
+    timer = setInterval(async () => {
       try {
         const s = await api.getSession(id);
-        if (s.status !== "running") {
-          clearInterval(timer);
+        if (!observedMessage) {
+          const recent = await api.messages(id, after, 20);
+          observedMessage = recent.some((m) => m.seq > after);
+        }
+        if (s.status === "running") {
+          observedRunning = true;
+        } else if (observedRunning || observedMessage || Date.now() - startedAt >= 10000) {
           finish();
         }
       } catch {
@@ -217,7 +229,16 @@ async function cmdMessages(api: API, args: string[]): Promise<void> {
   const [id] = args;
   if (!id) fail("usage: messages <sessionId>");
   const after = parseInt(flag(args, "--after") ?? "0", 10) || 0;
-  const msgs = await api.messages(id, after);
+  const msgs: Message[] = [];
+  let cursor = after;
+  for (;;) {
+    const page = await api.messages(id, cursor, 200);
+    msgs.push(...page);
+    if (page.length < 200) break;
+    const next = page[page.length - 1]?.seq ?? cursor;
+    if (next <= cursor) break;
+    cursor = next;
+  }
   if (msgs.length === 0) return console.log("(no messages)");
   for (const m of msgs) renderMessage(m);
 }
@@ -231,6 +252,8 @@ async function cmdEvent(api: API, args: string[]): Promise<void> {
     } else {
       console.log(`\x1b[90m[${ev.type}]\x1b[0m ${ev.data ? JSON.stringify(ev.data) : ""}`);
     }
+  }, (err) => {
+    console.error(`${C.red}[event error]${C.reset} ${err.message}`);
   });
   console.log("(订阅中，Ctrl-C 退出)");
   process.on("SIGINT", () => {
@@ -265,7 +288,12 @@ async function cmdConfig(api: API, args: string[]): Promise<void> {
     for (const item of kv) {
       const eq = item.indexOf("=");
       if (eq <= 0) fail(`bad k=v: ${item}`);
-      cfg[item.slice(0, eq)] = item.slice(eq + 1);
+      const value = item.slice(eq + 1);
+      try {
+        cfg[item.slice(0, eq)] = JSON.parse(value);
+      } catch {
+        cfg[item.slice(0, eq)] = value;
+      }
     }
     console.log(prettyJSON(await api.setConfig(keyId, cfg)));
   } else {
@@ -282,7 +310,7 @@ function apiKeyOf(api: API): string {
   return api.key;
 }
 
-async function cmdTui(api: API, args: string[]): Promise<void> {
+async function cmdTui(api: API, args: string[], globalSshUser?: string): Promise<void> {
   if (!process.stdout.isTTY) fail("TUI 需要交互式终端（tty）");
   let sid = flag(args, "--session");
   let initialMessages: Message[] | undefined;
@@ -308,7 +336,7 @@ async function cmdTui(api: API, args: string[]): Promise<void> {
   const { render } = await import("ink");
   const { TuiApp } = await import("./tui.js");
   const { sshTargetFromBase } = await import("./tui/ssh.js");
-  const sshUser = flag(args, "--ssh-user") ?? process.env.TARS_SSH_USER;
+  const sshUser = flag(args, "--ssh-user") ?? globalSshUser;
   const sshPort = Number(flag(args, "--ssh-port") ?? process.env.TARS_SSH_PORT ?? "0");
   render(
     createElement(TuiApp, {
@@ -323,20 +351,20 @@ async function cmdTui(api: API, args: string[]): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  let { baseURL, key, clientUser, passphrase, rest } = parseGlobalArgs(process.argv.slice(2));
-  if (!key) {
-    if (!passphrase) fail("missing API key (use --key <KEY> or TARS_API_KEY)");
-    // 有口令无 key：从目标服务器获取 machine-id，派生该服务器的 admin key
-    const probe = new API(baseURL, "", clientUser);
-    const machineID = await probe.machineID();
-    key = deriveAdminKey(passphrase, machineID);
-  }
-  const api = new API(baseURL, key, clientUser);
-  const [cmd, ...args] = rest;
+  let { baseURL, key, clientUser, sshUser, passphrase, rest } = parseGlobalArgs(process.argv.slice(2));
   try {
+    if (!key) {
+      if (!passphrase) fail("missing API key (use --key <KEY> or TARS_API_KEY)");
+      // 有口令无 key：从目标服务器获取 machine-id，派生该服务器的 admin key
+      const probe = new API(baseURL, "", clientUser);
+      const machineID = await probe.machineID();
+      key = deriveAdminKey(passphrase, machineID);
+    }
+    const api = new API(baseURL, key, clientUser);
+    const [cmd, ...args] = rest;
     if (!cmd) {
       // 无命令：默认进入交互式 TUI
-      await cmdTui(api, args);
+      await cmdTui(api, args, sshUser);
       return;
     }
     switch (cmd) {
@@ -390,7 +418,7 @@ async function main(): Promise<void> {
       case "tui":
       case "ui":
         // tui [--session <id>] [--continue] [--prompt <text>] [--ssh-user <u>] [--ssh-port <p>]
-        await cmdTui(api, args);
+      await cmdTui(api, args, sshUser);
         break;
       default:
         fail(`unknown command: ${cmd}`);

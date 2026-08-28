@@ -95,18 +95,24 @@ export function DialogSelect({
   useEffect(() => setSel(0), [title]);
 
   useInput((_input, key) => {
+    if (options.length === 0) {
+      if (key.escape || (key.ctrl && _input === "c")) onCancel();
+      return;
+    }
     if (key.upArrow || (key.ctrl && _input === "p")) setSel((s) => Math.max(0, s - 1));
     else if (key.downArrow || (key.ctrl && _input === "n")) setSel((s) => Math.min(options.length - 1, s + 1));
     else if (key.pageUp) setSel((s) => Math.max(0, s - maxOpts));
     else if (key.pageDown) setSel((s) => Math.min(options.length - 1, s + maxOpts));
-    else if (key.return) onSelect(options[selVal]);
+    else if (key.return && options.length > 0) onSelect(options[selVal]);
     else if (key.escape || (key.ctrl && _input === "c")) onCancel();
   });
 
   return (
     <DialogFrame title={title}>
       <Box flexDirection="column" paddingTop={1} paddingBottom={1}>
-        {win.map((o, i) => {
+        {options.length === 0 ? (
+          <Text color={theme.textMuted}>（无可用选项）</Text>
+        ) : win.map((o, i) => {
           const idx = winStart + i;
           const isSel = idx === selVal;
           return (
@@ -321,11 +327,19 @@ export function SessionSwitcher({
   useEffect(() => {
     const s = filtered[selVal];
     if (!s) return;
+    let active = true;
     setCur(s.id);
     api
       .messages(s.id, 0, 50)
-      .then((msgs) => setPreview(msgs.slice(-12)))
-      .catch(() => setPreview([]));
+      .then((msgs) => {
+        if (active) setPreview(msgs.slice(-12));
+      })
+      .catch(() => {
+        if (active) setPreview([]);
+      });
+    return () => {
+      active = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, selVal, api]);
 

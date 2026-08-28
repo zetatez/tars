@@ -198,6 +198,9 @@ function ToolPanel({ t, expanded, onToggle, register }: ToolPanelProps) {
     } else {
       register(t.id, null);
     }
+    return () => {
+      register(t.id, null);
+    };
   }, [isFoldable, collapsed, register, t.id]);
 
   return (

@@ -129,7 +129,8 @@ export function Autocomplete({
         setSelected((s) => Math.max(0, Math.min(shown.length - 1, s + dir)));
       },
       pick() {
-        onSelect(shown[Math.min(selected, shown.length - 1)]);
+        const item = shown[Math.min(selected, shown.length - 1)];
+        if (item) onSelect(item);
       },
     };
     register(api);

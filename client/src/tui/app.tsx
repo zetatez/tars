@@ -215,11 +215,9 @@ export function TuiApp({
             everTyped={everTyped}
             onTyped={markTyped}
             onStart={async (text) => {
-              try {
-                const s = await api.createSession();
-                setPendingPrompt(text);
-                setView({ type: "session", id: s.id });
-              } catch {}
+              const s = await api.createSession();
+              setPendingPrompt(text);
+              setView({ type: "session", id: s.id });
             }}
             onResume={(id) => {
               setPendingPrompt(undefined);
@@ -278,7 +276,7 @@ function HomeView({
   onSetMode: (m: "build" | "plan") => void;
   everTyped: boolean;
   onTyped: () => void;
-  onStart: (text: string) => void;
+  onStart: (text: string) => Promise<void>;
   onResume: (id: string) => void;
   onExit: () => void;
 }) {
@@ -335,9 +333,13 @@ function HomeView({
           break;
         case "models":
           void (async () => {
-            try {
-              const { models } = await api.models();
-              setModelOptions(
+              try {
+                const { models } = await api.models();
+                if (!models.length) {
+                  showToast("服务端未配置模型", "warning");
+                  return;
+                }
+                setModelOptions(
                 models.map((m) => ({ key: m.model, title: m.model, detail: m.provider || "默认" })),
               );
               setDialog({ kind: "models" });
@@ -400,7 +402,9 @@ function HomeView({
       }
       return;
     }
-    onStart(text);
+    void onStart(text).catch((err) => {
+      showToast(`创建会话失败：${(err as Error).message}`, "error");
+    });
   };
 
   const openSessions = () => setDialog({ kind: "switch" });
@@ -445,7 +449,6 @@ function HomeView({
           onToggleMode={onToggleMode}
           onTyped={onTyped}
           onToast={showToast}
-          onCommandSelect={(cmd) => handleSubmit(cmd)}
           onSessionSwitch={() => setDialog({ kind: "switch" })}
           registerPrompt={(api2) => {
             promptApi.current = api2;
@@ -585,6 +588,8 @@ function SessionView({
   const [tools, setTools] = useState<SelectOption[]>([]);
   const [modelOptions, setModelOptions] = useState<SelectOption[]>([]);
   const [approvals, setApprovals] = useState<Array<{ id: string; action: string; resource: string }>>([]);
+  const loadGenerationRef = useRef(0);
+  const approvalBusyRef = useRef(new Set<string>());
 
   const modelName = () => (provider ? `${provider}:` : "") + (model || "tars");
   // 高度缓存：seq → { h: 内容行数（不含 margin）, sig: 内容签名 }。
@@ -721,10 +726,13 @@ function SessionView({
 
   const resolveApproval = useCallback(
     (reqId: string, decision: "approved" | "denied") => {
-      setApprovals((prev) => prev.filter((a) => a.id !== reqId));
-      void api.approval(sid, reqId, decision).catch((err) => {
-        showToast(`approval failed: ${err.message}`, "error");
-      });
+      if (approvalBusyRef.current.has(reqId)) return;
+      approvalBusyRef.current.add(reqId);
+      void api
+        .approval(sid, reqId, decision)
+        .then(() => setApprovals((prev) => prev.filter((a) => a.id !== reqId)))
+        .catch((err) => showToast(`approval failed: ${err.message}`, "error"))
+        .finally(() => approvalBusyRef.current.delete(reqId));
     },
     [sid, showToast],
   );
@@ -736,11 +744,8 @@ function SessionView({
       // 同 seq 且内容未变化（重复订阅/重连的重复推送）→ 返回原数组，避免无谓重绘
       const old = prev[i];
       if (old && old.id === m.id && old.role === m.role) {
-        const same =
-          (old.content?.text ?? "") === (m.content?.text ?? "") &&
-          (old.content?.error ?? "") === (m.content?.error ?? "") &&
-          (old.content?.files?.length ?? 0) === (m.content?.files?.length ?? 0) &&
-          (old.content?.tools?.length ?? 0) === (m.content?.tools?.length ?? 0);
+        // 工具结果会在同一条消息内持续更新，不能只比较 tools.length。
+        const same = JSON.stringify(old.content ?? {}) === JSON.stringify(m.content ?? {});
         if (same) return prev;
       }
       const next = prev.slice();
@@ -750,6 +755,7 @@ function SessionView({
   }
 
   function loadSession(id: string) {
+    const generation = ++loadGenerationRef.current;
     setSid(id);
     setMessages([]);
     setFrozen(null);
@@ -766,20 +772,28 @@ function SessionView({
     api
       .messages(id, 0, 200)
       .then((msgs) => {
+        if (loadGenerationRef.current !== generation) return;
         setMessages(msgs);
         lastSeqRef.current = msgs.length ? msgs[msgs.length - 1].seq : 0;
         oldestSeqRef.current = msgs.length ? msgs[0].seq : 0;
         attachLiveEvents(id);
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (loadGenerationRef.current === generation) {
+          showToast(`加载消息失败：${(err as Error).message}`, "error");
+        }
+      });
     api
       .getSession(id)
       .then((s) => {
+        if (loadGenerationRef.current !== generation) return;
         setCwd(s.cwd);
-        if (s.model) setModel(s.model);
-        if (s.provider) setProvider(s.provider);
+        setModel(s.model || "");
+        setProvider(s.provider || "");
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (loadGenerationRef.current === generation) showToast(`加载会话失败：${err.message}`, "error");
+      });
   }
 
   const send = useCallback(
@@ -1057,29 +1071,43 @@ function SessionView({
 
   // 初始加载 cwd/model + 消息 + 发送初始 prompt
   useEffect(() => {
+    const generation = ++loadGenerationRef.current;
+    let active = true;
     api
       .getSession(sid)
       .then((s) => {
+        if (!active || loadGenerationRef.current !== generation) return;
         setCwd(s.cwd);
-        if (s.model) setModel(s.model);
-        if (s.provider) setProvider(s.provider);
+        setModel(s.model || "");
+        setProvider(s.provider || "");
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (active && loadGenerationRef.current === generation) {
+          showToast(`加载会话失败：${(err as Error).message}`, "error");
+        }
+      });
     api
       .messages(sid, 0, 200)
       .then((msgs) => {
+        if (!active || loadGenerationRef.current !== generation) return;
         setMessages(msgs);
         lastSeqRef.current = msgs.length ? msgs[msgs.length - 1].seq : 0;
         oldestSeqRef.current = msgs.length ? msgs[0].seq : 0;
         attachLiveEvents(sid);
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (active && loadGenerationRef.current === generation) {
+          showToast(`加载消息失败：${(err as Error).message}`, "error");
+        }
+      });
     if (initialPrompt && !sentInitial.current) {
       sentInitial.current = true;
       send(initialPrompt);
     }
     // 卸载时停止事件订阅
     return () => {
+      active = false;
+      loadGenerationRef.current++;
       stopRef.current?.();
       stopRef.current = null;
     };
@@ -1106,6 +1134,11 @@ function SessionView({
   }, []);
   const registerTool = useCallback((id: string, region: ToolRegion | null) => {
     setToolRegions((prev) => {
+      const old = prev.get(id);
+      const same = region && old
+        ? old.x === region.x && old.y === region.y && old.width === region.width && old.height === region.height
+        : old === region;
+      if (same) return prev;
       const next = new Map(prev);
       if (region) next.set(id, region);
       else next.delete(id);
@@ -1131,6 +1164,11 @@ function SessionView({
     { key: "n", label: "new session", run: onNew },
     {
       key: "l",
+      label: "sessions",
+      run: () => setDialog({ kind: "switch" }),
+    },
+    {
+      key: "r",
       label: "sessions",
       run: () => setDialog({ kind: "switch" }),
     },
@@ -1198,9 +1236,10 @@ function SessionView({
     // 按钮 0=左键点击（切换折叠面板），64=滚轮上滚，65=滚轮下滚。
     const mouse = parseMouseSeq(input);
     if (mouse) {
+      if (dialogOpen) return;
       if (mouse.pressed) {
         if (mouse.button === 0) {
-          const x = mouse.x;
+          const x = mouse.x - 1; // 终端坐标为 1-based，layout 坐标为 0-based
           const y = mouse.y - 1; // 屏幕 1-based → layout 0-based
           for (const [id, r] of toolRegions) {
             if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
@@ -1269,14 +1308,14 @@ function SessionView({
   if (showScrollbar) {
     thumbH = Math.max(1, Math.round((viewH / totalH) * viewH));
     const frac = maxTop > 0 ? Math.min(1, topRow / maxTop) : 0;
-    thumbTop = Math.round((1 - frac) * (viewH - thumbH));
+    thumbTop = Math.round(frac * (viewH - thumbH));
   }
 
   const winMsgs = messages.slice(m0, winEnd + 1);
 
   return (
     <Box flexDirection="column" height="100%" paddingLeft={2} paddingRight={2}>
-      <Box flexGrow={1} flexDirection="row" minHeight={0}>
+        <Box flexGrow={1} flexDirection="row" minHeight={0}>
         <Box
           flexGrow={1}
           flexDirection="column"
@@ -1359,7 +1398,6 @@ function SessionView({
         onToggleMode={onToggleMode}
         onTyped={onTyped}
         onToast={showToast}
-        onCommandSelect={send}
         onSessionSwitch={() => setDialog({ kind: "switch" })}
         registerPrompt={(api2) => {
           promptApiRef.current = api2;
@@ -1372,7 +1410,7 @@ function SessionView({
           currentId={sid}
           onSelect={(id) => {
             setDialog(null);
-            loadSession(id);
+            onSessionChange(id);
           }}
           onCancel={() => setDialog(null)}
         />

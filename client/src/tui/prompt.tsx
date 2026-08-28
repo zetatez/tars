@@ -73,7 +73,6 @@ export interface PromptProps {
   onToggleMode: () => void;
   onTyped: () => void;
   onToast?: (text: string, kind?: "info" | "error" | "warning") => void;
-  onCommandSelect: (cmdText: string) => void;
   onSessionSwitch?: () => void;
   registerPrompt: (api: { setText(text: string): void } | null) => void;
 }
@@ -101,7 +100,6 @@ export function Prompt({
   onToggleMode,
   onTyped,
   onToast,
-  onCommandSelect,
   onSessionSwitch,
   registerPrompt,
 }: PromptProps) {
@@ -305,7 +303,8 @@ export function Prompt({
   function handleAutoSelect(item: AutocompleteItem) {
     if (item.kind === "command") {
       autoRef.current = null;
-      onCommandSelect(item.insert.trim());
+      // 补全只替换当前命令，保留编辑状态；Enter 再执行，避免选择后旧文本残留。
+      mutate(item.insert, item.insert.length);
     } else {
       // @ 文件：把 [@..cur) 的 token 替换为选中路径
       const at = buf.lastIndexOf("@", cur - 1);
